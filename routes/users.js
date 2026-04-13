@@ -60,7 +60,7 @@ router.post('/register', async (req, res) => {
     return res.status(500).json({ error: 'Server configuration error' });
   }
 
-  const { name, phone, email, dob, designation, password, managerId } =
+  const { name, phone, email, dob, designation, password, managerId, vehicleNumber } =
     req.body || {};
 
   if (
@@ -77,7 +77,7 @@ router.post('/register', async (req, res) => {
   ) {
     return res.status(400).json({
       error:
-        'All fields are required: name, phone, email, dob, designation, password. Sales also require managerId.',
+        'All fields are required: name, phone, email, dob, designation, password. Sales also require managerId and drivers require vehicleNumber.',
     });
   }
 
@@ -97,6 +97,13 @@ router.post('/register', async (req, res) => {
     if (!managerId || !mongoose.isValidObjectId(managerId)) {
       return res.status(400).json({
         error: 'Sales registrations require a valid managerId',
+      });
+    }
+  }
+  if (designation === 'driver') {
+    if (vehicleNumber == null || String(vehicleNumber).trim() === '') {
+      return res.status(400).json({
+        error: 'Driver registrations require vehicleNumber',
       });
     }
   }
@@ -132,6 +139,8 @@ router.post('/register', async (req, res) => {
       email: emailValue,
       dob: dobDate,
       designation,
+      vehicleNumber:
+        designation === 'driver' ? String(vehicleNumber).trim() : undefined,
       password: passwordHash,
       managerId: resolvedManagerId,
       approvalStatus: 'pending',

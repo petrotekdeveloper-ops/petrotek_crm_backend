@@ -10,6 +10,47 @@ const {
   monthUtcRange,
 } = require('../utils/salesHelpers');
 
+/** Daily rows + month summary for one rep (manager must own this sales user). */
+async function repDailySalesPayload(managerId, salesUserId, year, month) {
+  const rep = await User.findOne({
+    _id: salesUserId,
+    managerId,
+    designation: 'sales',
+    approvalStatus: 'approved',
+  })
+    .select('name phone')
+    .lean();
+  if (!rep) return null;
+  const { start, end } = monthUtcRange(year, month);
+  const [rows, monthTotal, teamTargetAmount] = await Promise.all([
+    DailySale.find({
+      salesUserId: rep._id,
+      saleDate: { $gte: start, $lt: end },
+    })
+      .sort({ saleDate: -1, createdAt: -1 })
+      .lean(),
+    sumDailySalesForUserInMonth(rep._id, year, month),
+    getTeamTargetAmount(managerId, year, month),
+  ]);
+  const remaining =
+    teamTargetAmount != null
+      ? Math.max(0, teamTargetAmount - monthTotal)
+      : null;
+  return {
+    rep: {
+      userId: rep._id,
+      name: rep.name,
+      phone: rep.phone,
+    },
+    year,
+    month,
+    monthTotal,
+    teamTargetAmount,
+    remaining,
+    dailySales: rows,
+  };
+}
+
 const router = express.Router();
 
 function parseYearMonthBody(body) {
@@ -153,6 +194,34 @@ router.get('/team-target', requireManager, async (req, res) => {
     });
   } catch {
     return res.status(500).json({ error: 'Failed to load team target' });
+  }
+});
+
+/** One rep’s daily log for a month (manager must manage this sales user). */
+router.get('/rep/:salesUserId/daily-sales', requireManager, async (req, res) => {
+  const ym = parseYearMonthQuery(req.query);
+  if (!ym) {
+    return res.status(400).json({
+      error: 'Query params year and month (1-12) are required',
+    });
+  }
+  const { salesUserId } = req.params;
+  if (!mongoose.isValidObjectId(salesUserId)) {
+    return res.status(400).json({ error: 'Invalid sales user id' });
+  }
+  try {
+    const payload = await repDailySalesPayload(
+      req.manager._id,
+      salesUserId,
+      ym.year,
+      ym.month
+    );
+    if (!payload) {
+      return res.status(404).json({ error: 'Sales rep not found on your team' });
+    }
+    return res.json(payload);
+  } catch {
+    return res.status(500).json({ error: 'Failed to load rep daily sales' });
   }
 });
 

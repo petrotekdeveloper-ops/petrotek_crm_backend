@@ -70,7 +70,7 @@ router.get('/users/:id', requireAdmin, async (req, res) => {
 });
 
 router.post('/users', requireAdmin, async (req, res) => {
-  const { name, phone, email, dob, designation, password, managerId } =
+  const { name, phone, email, dob, designation, password, managerId, vehicleNumber } =
     req.body || {};
 
   if (
@@ -87,7 +87,7 @@ router.post('/users', requireAdmin, async (req, res) => {
   ) {
     return res.status(400).json({
       error:
-        'All fields are required: name, phone, email, dob, designation, password (managerId optional)',
+        'All fields are required: name, phone, email, dob, designation, password (sales may use managerId, drivers require vehicleNumber)',
     });
   }
 
@@ -95,6 +95,11 @@ router.post('/users', requireAdmin, async (req, res) => {
     return res.status(400).json({
       error: `designation must be one of: ${DESIGNATIONS.join(', ')}`,
     });
+  }
+  if (designation === 'driver') {
+    if (vehicleNumber == null || String(vehicleNumber).trim() === '') {
+      return res.status(400).json({ error: 'vehicleNumber is required for drivers' });
+    }
   }
 
   if (managerId != null && managerId !== '') {
@@ -123,9 +128,11 @@ router.post('/users', requireAdmin, async (req, res) => {
       email: emailValue,
       dob: dobDate,
       designation,
+      vehicleNumber:
+        designation === 'driver' ? String(vehicleNumber).trim() : undefined,
       password: passwordHash,
       managerId:
-        managerId && String(managerId).trim() !== ''
+        designation === 'sales' && managerId && String(managerId).trim() !== ''
           ? managerId
           : null,
       approvalStatus: 'approved',
@@ -143,7 +150,7 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
   if (!mongoose.isValidObjectId(id)) return badUserId(res);
 
-  const { name, phone, email, dob, designation, password, managerId, approvalStatus } =
+  const { name, phone, email, dob, designation, password, managerId, vehicleNumber, approvalStatus } =
     req.body || {};
   const updates = {};
 
@@ -178,6 +185,13 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     }
     updates.designation = designation;
   }
+  if (vehicleNumber !== undefined) {
+    if (vehicleNumber === null || String(vehicleNumber).trim() === '') {
+      updates.vehicleNumber = undefined;
+    } else {
+      updates.vehicleNumber = String(vehicleNumber).trim();
+    }
+  }
   if (password !== undefined) {
     if (String(password) === '') {
       return res.status(400).json({ error: 'password cannot be empty' });
@@ -204,6 +218,25 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
       });
     }
     updates.approvalStatus = approvalStatus;
+  }
+
+  const currentUser = await User.findById(id).select('designation vehicleNumber');
+  if (!currentUser) return res.status(404).json({ error: 'User not found' });
+
+  const designationToValidate = updates.designation ?? currentUser.designation;
+  const resolvedVehicleNumber =
+    updates.vehicleNumber !== undefined
+      ? updates.vehicleNumber
+      : currentUser.vehicleNumber;
+
+  if (
+    designationToValidate === 'driver' &&
+    (!resolvedVehicleNumber || String(resolvedVehicleNumber).trim() === '')
+  ) {
+    return res.status(400).json({ error: 'vehicleNumber is required for drivers' });
+  }
+  if (designationToValidate !== 'driver') {
+    updates.vehicleNumber = undefined;
   }
 
   if (Object.keys(updates).length === 0) {

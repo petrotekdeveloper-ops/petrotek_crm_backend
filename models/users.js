@@ -26,6 +26,13 @@ const userSchema = new mongoose.Schema(
       enum: ['manager', 'sales', 'driver'],
       required: true,
     },
+    vehicleNumber: {
+      type: String,
+      trim: true,
+      required: function requiredForDriver() {
+        return this.designation === 'driver';
+      },
+    },
     password: {
       type: String,
       required: true,

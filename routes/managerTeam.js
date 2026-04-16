@@ -1,12 +1,14 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const User = require('../models/users');
-const MonthlyTeamTarget = require('../models/monthlyTeamTarget');
+const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const DailySale = require('../models/dailySale');
 const { requireManager } = require('../middleware/managerAuth');
 const {
   sumDailySalesForUserInMonth,
-  getTeamTargetAmount,
+  getSalesUserMonthlyTargetAmount,
+  getSalesUserMonthlyTargetsMap,
+  sumDefinedTargets,
   monthUtcRange,
 } = require('../utils/salesHelpers');
 
@@ -22,7 +24,7 @@ async function repDailySalesPayload(managerId, salesUserId, year, month) {
     .lean();
   if (!rep) return null;
   const { start, end } = monthUtcRange(year, month);
-  const [rows, monthTotal, teamTargetAmount] = await Promise.all([
+  const [rows, monthTotal, monthlyTargetAmount, targetDoc] = await Promise.all([
     DailySale.find({
       salesUserId: rep._id,
       saleDate: { $gte: start, $lt: end },
@@ -30,11 +32,18 @@ async function repDailySalesPayload(managerId, salesUserId, year, month) {
       .sort({ saleDate: -1, createdAt: -1 })
       .lean(),
     sumDailySalesForUserInMonth(rep._id, year, month),
-    getTeamTargetAmount(managerId, year, month),
+    getSalesUserMonthlyTargetAmount(rep._id, year, month),
+    MonthlySalesUserTarget.findOne({
+      salesUserId: rep._id,
+      year,
+      month,
+    })
+      .select('_id')
+      .lean(),
   ]);
   const remaining =
-    teamTargetAmount != null
-      ? Math.max(0, teamTargetAmount - monthTotal)
+    monthlyTargetAmount != null
+      ? Math.max(0, monthlyTargetAmount - monthTotal)
       : null;
   return {
     rep: {
@@ -45,7 +54,9 @@ async function repDailySalesPayload(managerId, salesUserId, year, month) {
     year,
     month,
     monthTotal,
-    teamTargetAmount,
+    teamTargetAmount: monthlyTargetAmount,
+    monthlyTargetAmount,
+    hasTarget: Boolean(targetDoc),
     remaining,
     dailySales: rows,
   };
@@ -71,13 +82,17 @@ function parseYearMonthQuery(query) {
   return { year: y, month: m };
 }
 
-router.put('/team-target', requireManager, async (req, res) => {
+/** Set this rep's monthly target (per-user only). */
+router.put('/sales-user-target', requireManager, async (req, res) => {
   const ym = parseYearMonthBody(req.body);
-  const { targetAmount } = req.body || {};
+  const { salesUserId, targetAmount } = req.body || {};
   if (!ym) {
     return res.status(400).json({
       error: 'year and month (1-12) are required',
     });
+  }
+  if (!salesUserId || !mongoose.isValidObjectId(salesUserId)) {
+    return res.status(400).json({ error: 'Valid salesUserId is required' });
   }
   const amt = Number(targetAmount);
   if (!Number.isFinite(amt) || amt < 0) {
@@ -87,11 +102,23 @@ router.put('/team-target', requireManager, async (req, res) => {
   }
 
   try {
-    const doc = await MonthlyTeamTarget.findOneAndUpdate(
-      { managerId: req.manager._id, year: ym.year, month: ym.month },
+    const rep = await User.findOne({
+      _id: salesUserId,
+      managerId: req.manager._id,
+      designation: 'sales',
+      approvalStatus: 'approved',
+    }).select('_id');
+    if (!rep) {
+      return res.status(404).json({
+        error: 'Sales rep not found on your team',
+      });
+    }
+    const doc = await MonthlySalesUserTarget.findOneAndUpdate(
+      { salesUserId: rep._id, year: ym.year, month: ym.month },
       {
         $set: {
           managerId: req.manager._id,
+          salesUserId: rep._id,
           year: ym.year,
           month: ym.month,
           targetAmount: amt,
@@ -100,8 +127,8 @@ router.put('/team-target', requireManager, async (req, res) => {
       { upsert: true, new: true, runValidators: true }
     );
     return res.json({
-      teamTarget: {
-        managerId: doc.managerId,
+      salesUserTarget: {
+        salesUserId: doc.salesUserId,
         year: doc.year,
         month: doc.month,
         targetAmount: doc.targetAmount,
@@ -109,9 +136,42 @@ router.put('/team-target', requireManager, async (req, res) => {
     });
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(409).json({ error: 'Duplicate team target' });
+      return res.status(409).json({ error: 'Duplicate sales user target' });
     }
-    return res.status(500).json({ error: 'Failed to save team target' });
+    return res.status(500).json({ error: 'Failed to save sales user target' });
+  }
+});
+
+/** Remove this rep's monthly target for the month (no goal until set again). */
+router.delete('/sales-user-target', requireManager, async (req, res) => {
+  const ym = parseYearMonthQuery(req.query);
+  const { salesUserId } = req.query || {};
+  if (!ym) {
+    return res.status(400).json({
+      error: 'Query params year and month (1-12) are required',
+    });
+  }
+  if (!salesUserId || !mongoose.isValidObjectId(salesUserId)) {
+    return res.status(400).json({ error: 'Valid salesUserId is required' });
+  }
+  try {
+    const rep = await User.findOne({
+      _id: salesUserId,
+      managerId: req.manager._id,
+      designation: 'sales',
+      approvalStatus: 'approved',
+    }).select('_id');
+    if (!rep) {
+      return res.status(404).json({ error: 'Sales rep not found on your team' });
+    }
+    await MonthlySalesUserTarget.deleteOne({
+      salesUserId: rep._id,
+      year: ym.year,
+      month: ym.month,
+    });
+    return res.json({ message: 'Sales user target cleared' });
+  } catch {
+    return res.status(500).json({ error: 'Failed to clear sales user target' });
   }
 });
 
@@ -124,12 +184,6 @@ router.get('/team-summary', requireManager, async (req, res) => {
   }
 
   try {
-    const teamTargetAmount = await getTeamTargetAmount(
-      req.manager._id,
-      ym.year,
-      ym.month
-    );
-
     const salesUsers = await User.find({
       managerId: req.manager._id,
       designation: 'sales',
@@ -138,6 +192,19 @@ router.get('/team-summary', requireManager, async (req, res) => {
       .select('name phone')
       .lean();
 
+    const ids = salesUsers.map((u) => u._id);
+    const [targetMap, targetDocs] = await Promise.all([
+      getSalesUserMonthlyTargetsMap(ym.year, ym.month, ids),
+      MonthlySalesUserTarget.find({
+        salesUserId: { $in: ids },
+        year: ym.year,
+        month: ym.month,
+      })
+        .select('salesUserId')
+        .lean(),
+    ]);
+    const hasTargetSet = new Set(targetDocs.map((d) => String(d.salesUserId)));
+
     const members = await Promise.all(
       salesUsers.map(async (u) => {
         const myTotalSales = await sumDailySalesForUserInMonth(
@@ -145,19 +212,24 @@ router.get('/team-summary', requireManager, async (req, res) => {
           ym.year,
           ym.month
         );
+        const targetAmount = targetMap.get(String(u._id)) ?? null;
         const remaining =
-          teamTargetAmount != null
-            ? Math.max(0, teamTargetAmount - myTotalSales)
+          targetAmount != null
+            ? Math.max(0, targetAmount - myTotalSales)
             : null;
         return {
           userId: u._id,
           name: u.name,
           phone: u.phone,
           myTotalSales,
+          targetAmount,
+          hasTarget: hasTargetSet.has(String(u._id)),
           remaining,
         };
       })
     );
+
+    const teamTargetAmount = sumDefinedTargets(targetMap);
 
     return res.json({
       year: ym.year,
@@ -167,33 +239,6 @@ router.get('/team-summary', requireManager, async (req, res) => {
     });
   } catch {
     return res.status(500).json({ error: 'Failed to load team summary' });
-  }
-});
-
-router.get('/team-target', requireManager, async (req, res) => {
-  const ym = parseYearMonthQuery(req.query);
-  if (!ym) {
-    return res.status(400).json({
-      error: 'Query params year and month (1-12) are required',
-    });
-  }
-  try {
-    const doc = await MonthlyTeamTarget.findOne({
-      managerId: req.manager._id,
-      year: ym.year,
-      month: ym.month,
-    }).lean();
-    return res.json({
-      teamTarget: doc
-        ? {
-            year: doc.year,
-            month: doc.month,
-            targetAmount: doc.targetAmount,
-          }
-        : null,
-    });
-  } catch {
-    return res.status(500).json({ error: 'Failed to load team target' });
   }
 });
 

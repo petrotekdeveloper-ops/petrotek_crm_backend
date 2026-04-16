@@ -1,8 +1,13 @@
 const mongoose = require('mongoose');
 
-const monthlyTeamTargetSchema = new mongoose.Schema(
+const monthlySalesUserTargetSchema = new mongoose.Schema(
   {
     managerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    salesUserId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
@@ -18,9 +23,10 @@ const monthlyTeamTargetSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-monthlyTeamTargetSchema.index(
-  { managerId: 1, year: 1, month: 1 },
+monthlySalesUserTargetSchema.index(
+  { salesUserId: 1, year: 1, month: 1 },
   { unique: true }
 );
+monthlySalesUserTargetSchema.index({ managerId: 1, year: 1, month: 1 });
 
-module.exports = mongoose.model('MonthlyTeamTarget', monthlyTeamTargetSchema);
+module.exports = mongoose.model('MonthlySalesUserTarget', monthlySalesUserTargetSchema);

@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
 const User = require('../models/users');
-const MonthlyTeamTarget = require('../models/monthlyTeamTarget');
+const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const { requireAdmin } = require('../middleware/adminAuth');
 
 const router = express.Router();
@@ -270,12 +270,16 @@ router.delete('/users/:id', requireAdmin, async (req, res) => {
   }
 });
 
-router.put('/team-targets', requireAdmin, async (req, res) => {
-  const { managerId, year, month, targetAmount } = req.body || {};
+/** Per sales user only (managerId + salesUserId + year + month + targetAmount). */
+router.put('/sales-user-targets', requireAdmin, async (req, res) => {
+  const { managerId, salesUserId, year, month, targetAmount } = req.body || {};
   const y = parseInt(year, 10);
   const m = parseInt(month, 10);
   if (!managerId || !mongoose.isValidObjectId(managerId)) {
     return res.status(400).json({ error: 'Valid managerId is required' });
+  }
+  if (!salesUserId || !mongoose.isValidObjectId(salesUserId)) {
+    return res.status(400).json({ error: 'Valid salesUserId is required' });
   }
   if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) {
     return res.status(400).json({ error: 'year and month (1-12) are required' });
@@ -292,11 +296,22 @@ router.put('/team-targets', requireAdmin, async (req, res) => {
     if (!mgr || mgr.designation !== 'manager') {
       return res.status(400).json({ error: 'managerId must reference a manager' });
     }
-    const doc = await MonthlyTeamTarget.findOneAndUpdate(
-      { managerId, year: y, month: m },
+    const rep = await User.findById(salesUserId);
+    if (
+      !rep ||
+      rep.designation !== 'sales' ||
+      String(rep.managerId) !== String(managerId)
+    ) {
+      return res.status(400).json({
+        error: 'salesUserId must be a sales user under this manager',
+      });
+    }
+    const doc = await MonthlySalesUserTarget.findOneAndUpdate(
+      { salesUserId: rep._id, year: y, month: m },
       {
         $set: {
           managerId,
+          salesUserId: rep._id,
           year: y,
           month: m,
           targetAmount: amt,
@@ -305,8 +320,9 @@ router.put('/team-targets', requireAdmin, async (req, res) => {
       { upsert: true, new: true, runValidators: true }
     );
     return res.json({
-      teamTarget: {
+      salesUserTarget: {
         managerId: doc.managerId,
+        salesUserId: doc.salesUserId,
         year: doc.year,
         month: doc.month,
         targetAmount: doc.targetAmount,
@@ -314,17 +330,20 @@ router.put('/team-targets', requireAdmin, async (req, res) => {
     });
   } catch (err) {
     if (err.code === 11000) {
-      return res.status(409).json({ error: 'Duplicate team target' });
+      return res.status(409).json({ error: 'Duplicate sales user target' });
     }
-    return res.status(500).json({ error: 'Failed to save team target' });
+    return res.status(500).json({ error: 'Failed to save sales user target' });
   }
 });
 
-router.get('/team-targets', requireAdmin, async (req, res) => {
-  const { managerId, year, month } = req.query;
+router.get('/sales-user-targets', requireAdmin, async (req, res) => {
+  const { managerId, salesUserId, year, month } = req.query;
   const filter = {};
   if (managerId && mongoose.isValidObjectId(managerId)) {
     filter.managerId = managerId;
+  }
+  if (salesUserId && mongoose.isValidObjectId(salesUserId)) {
+    filter.salesUserId = salesUserId;
   }
   if (year !== undefined && year !== '') {
     const y = parseInt(year, 10);
@@ -335,12 +354,12 @@ router.get('/team-targets', requireAdmin, async (req, res) => {
     if (Number.isFinite(m)) filter.month = m;
   }
   try {
-    const teamTargets = await MonthlyTeamTarget.find(filter)
+    const salesUserTargets = await MonthlySalesUserTarget.find(filter)
       .sort({ year: -1, month: -1 })
       .lean();
-    return res.json({ teamTargets });
+    return res.json({ salesUserTargets });
   } catch {
-    return res.status(500).json({ error: 'Failed to list team targets' });
+    return res.status(500).json({ error: 'Failed to list sales user targets' });
   }
 });
 

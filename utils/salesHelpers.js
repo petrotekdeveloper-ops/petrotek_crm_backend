@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const MonthlyTeamTarget = require('../models/monthlyTeamTarget');
+const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const DailySale = require('../models/dailySale');
 
 /** UTC bounds for calendar month (inclusive start, exclusive end for queries use $lt nextMonthStart) */
@@ -39,9 +39,10 @@ async function sumDailySalesForUserInMonth(salesUserId, year, month) {
   return agg.length ? agg[0].total : 0;
 }
 
-async function getTeamTargetAmount(managerId, year, month) {
-  const doc = await MonthlyTeamTarget.findOne({
-    managerId,
+/** Monthly target for one sales user (only source: MonthlySalesUserTarget). */
+async function getSalesUserMonthlyTargetAmount(salesUserId, year, month) {
+  const doc = await MonthlySalesUserTarget.findOne({
+    salesUserId,
     year,
     month,
   }).lean();
@@ -49,7 +50,46 @@ async function getTeamTargetAmount(managerId, year, month) {
 }
 
 /**
- * Individual remaining = team target − this user's sum for the month (target missing → null remaining).
+ * Batch-resolve targets for many reps (avoids N+1 queries).
+ * Returns Map: salesUserId string → target (number | null if no row).
+ */
+async function getSalesUserMonthlyTargetsMap(year, month, salesUserIds) {
+  if (!salesUserIds.length) {
+    return new Map();
+  }
+  const oidList = salesUserIds.map((id) =>
+    id instanceof mongoose.Types.ObjectId ? id : new mongoose.Types.ObjectId(id)
+  );
+  const docs = await MonthlySalesUserTarget.find({
+    salesUserId: { $in: oidList },
+    year,
+    month,
+  }).lean();
+  const byUser = new Map(
+    docs.map((d) => [String(d.salesUserId), d.targetAmount])
+  );
+  const map = new Map();
+  for (const id of salesUserIds) {
+    const key = String(id);
+    map.set(key, byUser.has(key) ? byUser.get(key) : null);
+  }
+  return map;
+}
+
+function sumDefinedTargets(map) {
+  let sum = 0;
+  let any = false;
+  for (const v of map.values()) {
+    if (v != null && Number.isFinite(v)) {
+      sum += v;
+      any = true;
+    }
+  }
+  return any ? sum : null;
+}
+
+/**
+ * Remaining = monthly target − this user's sum (no target row → null remaining).
  */
 async function salesUserMonthSummary(salesUser, year, month) {
   const managerId = salesUser.managerId;
@@ -58,25 +98,27 @@ async function salesUserMonthSummary(salesUser, year, month) {
       year,
       month,
       teamTargetAmount: null,
+      monthlyTargetAmount: null,
       myTotalSales: 0,
       remaining: null,
     };
   }
 
-  const [teamTargetAmount, myTotalSales] = await Promise.all([
-    getTeamTargetAmount(managerId, year, month),
+  const [monthlyTargetAmount, myTotalSales] = await Promise.all([
+    getSalesUserMonthlyTargetAmount(salesUser._id, year, month),
     sumDailySalesForUserInMonth(salesUser._id, year, month),
   ]);
 
   const remaining =
-    teamTargetAmount != null
-      ? Math.max(0, teamTargetAmount - myTotalSales)
+    monthlyTargetAmount != null
+      ? Math.max(0, monthlyTargetAmount - myTotalSales)
       : null;
 
   return {
     year,
     month,
-    teamTargetAmount,
+    teamTargetAmount: monthlyTargetAmount,
+    monthlyTargetAmount,
     myTotalSales,
     remaining,
   };
@@ -86,6 +128,8 @@ module.exports = {
   monthUtcRange,
   parseSaleDate,
   sumDailySalesForUserInMonth,
-  getTeamTargetAmount,
+  getSalesUserMonthlyTargetAmount,
+  getSalesUserMonthlyTargetsMap,
+  sumDefinedTargets,
   salesUserMonthSummary,
 };

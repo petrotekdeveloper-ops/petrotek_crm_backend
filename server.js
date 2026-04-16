@@ -22,11 +22,13 @@ const adminRoutes = require('./routes/admin');
 const userRoutes = require('./routes/users');
 const salesRoutes = require('./routes/sales');
 const managerTeamRoutes = require('./routes/managerTeam');
+const tripRoutes = require('./routes/trips');
 
 app.use('/api/admin', adminRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/manager', managerTeamRoutes);
+app.use('/api/trips', tripRoutes);
 
 async function connectDB() {
     try {

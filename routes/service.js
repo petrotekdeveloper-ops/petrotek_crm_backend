@@ -37,6 +37,14 @@ function badId(res) {
   return res.status(400).json({ error: 'Invalid log id' });
 }
 
+function parsePaging(query) {
+  const limitRaw = Number(query?.limit);
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(200, Math.trunc(limitRaw)))
+    : 100;
+  return { limit };
+}
+
 function parseYearMonth(query) {
   const y = parseInt(query?.year, 10);
   const m = parseInt(query?.month, 10);
@@ -53,21 +61,14 @@ function monthUtcRange(year, month) {
 }
 
 router.get('/', requireService, async (req, res) => {
+  const { limit } = parsePaging(req.query);
   const ym = parseYearMonth(req.query);
-  const limitRaw = Number(req.query?.limit);
-  const defaultLimit = ym ? 500 : 100;
-  const cap = ym ? 500 : 200;
-  const limit = Number.isFinite(limitRaw)
-    ? Math.max(1, Math.min(cap, Math.trunc(limitRaw)))
-    : defaultLimit;
-
-  const filter = { serviceUserId: req.serviceUser._id };
-  if (ym) {
-    const { start, end } = monthUtcRange(ym.year, ym.month);
-    filter.date = { $gte: start, $lt: end };
-  }
-
   try {
+    const filter = { serviceUserId: req.serviceUser._id };
+    if (ym) {
+      const { start, end } = monthUtcRange(ym.year, ym.month);
+      filter.date = { $gte: start, $lt: end };
+    }
     const logs = await ServiceLog.find(filter)
       .sort({ date: -1, createdAt: -1 })
       .limit(limit)

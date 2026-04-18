@@ -4,11 +4,14 @@ const bcrypt = require('bcrypt');
 const mongoose = require('mongoose');
 const User = require('../models/users');
 const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
+const ServiceLog = require('../models/serviceLog');
+const DailySale = require('../models/dailySale');
+const { parseSaleDate } = require('../utils/salesHelpers');
 const { requireAdmin } = require('../middleware/adminAuth');
 
 const router = express.Router();
 const BCRYPT_ROUNDS = 10;
-const DESIGNATIONS = ['manager', 'sales', 'driver'];
+const DESIGNATIONS = ['manager', 'sales', 'driver', 'service'];
 
 function userResponse(doc) {
   const o = doc.toObject ? doc.toObject() : { ...doc };
@@ -18,6 +21,21 @@ function userResponse(doc) {
 
 function badUserId(res) {
   return res.status(400).json({ error: 'Invalid user id' });
+}
+
+function parseYearMonth(query) {
+  const y = parseInt(query?.year, 10);
+  const m = parseInt(query?.month, 10);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) {
+    return null;
+  }
+  return { year: y, month: m };
+}
+
+function monthUtcRange(year, month) {
+  const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+  return { start, end };
 }
 
 router.post('/login', (req, res) => {
@@ -87,7 +105,7 @@ router.post('/users', requireAdmin, async (req, res) => {
   ) {
     return res.status(400).json({
       error:
-        'All fields are required: name, phone, email, dob, designation, password (sales may use managerId, drivers require vehicleNumber)',
+        'All fields are required: name, phone, email, dob, designation, password (sales require managerId, drivers require vehicleNumber)',
     });
   }
 
@@ -102,7 +120,15 @@ router.post('/users', requireAdmin, async (req, res) => {
     }
   }
 
-  if (managerId != null && managerId !== '') {
+  if (designation === 'sales') {
+    if (!managerId || String(managerId).trim() === '') {
+      return res.status(400).json({ error: 'managerId is required for sales users' });
+    }
+  } else if (managerId != null && String(managerId).trim() !== '') {
+    return res.status(400).json({ error: 'managerId can only be provided for sales users' });
+  }
+
+  if (managerId != null && String(managerId).trim() !== '') {
     if (!mongoose.isValidObjectId(managerId)) {
       return res.status(400).json({ error: 'Invalid managerId' });
     }
@@ -220,7 +246,7 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     updates.approvalStatus = approvalStatus;
   }
 
-  const currentUser = await User.findById(id).select('designation vehicleNumber');
+  const currentUser = await User.findById(id).select('designation vehicleNumber managerId');
   if (!currentUser) return res.status(404).json({ error: 'User not found' });
 
   const designationToValidate = updates.designation ?? currentUser.designation;
@@ -237,6 +263,15 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
   }
   if (designationToValidate !== 'driver') {
     updates.vehicleNumber = undefined;
+  }
+  const resolvedManagerId =
+    updates.managerId !== undefined ? updates.managerId : currentUser.managerId;
+  if (designationToValidate === 'sales') {
+    if (!resolvedManagerId) {
+      return res.status(400).json({ error: 'managerId is required for sales users' });
+    }
+  } else {
+    updates.managerId = null;
   }
 
   if (Object.keys(updates).length === 0) {
@@ -360,6 +395,259 @@ router.get('/sales-user-targets', requireAdmin, async (req, res) => {
     return res.json({ salesUserTargets });
   } catch {
     return res.status(500).json({ error: 'Failed to list sales user targets' });
+  }
+});
+
+router.get('/service-users', requireAdmin, async (req, res) => {
+  try {
+    const users = await User.find({ designation: 'service' })
+      .select('_id name phone approvalStatus')
+      .sort({ name: 1 })
+      .lean();
+    return res.json({ serviceUsers: users });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list service users' });
+  }
+});
+
+router.get('/service-logs/summary', requireAdmin, async (req, res) => {
+  const ym = parseYearMonth(req.query);
+  if (!ym) {
+    return res.status(400).json({ error: 'Query params year and month (1-12) are required' });
+  }
+  const { serviceUserId } = req.query;
+  if (serviceUserId && !mongoose.isValidObjectId(serviceUserId)) {
+    return res.status(400).json({ error: 'Invalid serviceUserId' });
+  }
+
+  const { start, end } = monthUtcRange(ym.year, ym.month);
+  const match = { date: { $gte: start, $lt: end } };
+  if (serviceUserId) {
+    match.serviceUserId = new mongoose.Types.ObjectId(serviceUserId);
+  }
+
+  try {
+    const [totals, statusRows] = await Promise.all([
+      ServiceLog.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: null,
+            totalLogs: { $sum: 1 },
+            totalKm: { $sum: '$km' },
+            uniqueCustomers: { $addToSet: '$customer' },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            totalLogs: 1,
+            totalKm: 1,
+            uniqueCustomerCount: { $size: '$uniqueCustomers' },
+          },
+        },
+      ]),
+      ServiceLog.aggregate([
+        { $match: match },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+        { $project: { _id: 0, status: '$_id', count: 1 } },
+        { $sort: { count: -1, status: 1 } },
+      ]),
+    ]);
+
+    const t = totals[0] || { totalLogs: 0, totalKm: 0, uniqueCustomerCount: 0 };
+    return res.json({
+      summary: {
+        year: ym.year,
+        month: ym.month,
+        totalLogs: t.totalLogs || 0,
+        totalKm: Number(t.totalKm || 0),
+        uniqueCustomers: t.uniqueCustomerCount || 0,
+        byStatus: statusRows,
+      },
+    });
+  } catch {
+    return res.status(500).json({ error: 'Failed to load service log summary' });
+  }
+});
+
+router.get('/service-logs', requireAdmin, async (req, res) => {
+  const ym = parseYearMonth(req.query);
+  if (!ym) {
+    return res.status(400).json({ error: 'Query params year and month (1-12) are required' });
+  }
+  const { serviceUserId, status } = req.query;
+  if (serviceUserId && !mongoose.isValidObjectId(serviceUserId)) {
+    return res.status(400).json({ error: 'Invalid serviceUserId' });
+  }
+
+  const limitRaw = Number(req.query?.limit);
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(500, Math.trunc(limitRaw)))
+    : 200;
+
+  const { start, end } = monthUtcRange(ym.year, ym.month);
+  const filter = { date: { $gte: start, $lt: end } };
+  if (serviceUserId) filter.serviceUserId = serviceUserId;
+  if (status != null && String(status).trim() !== '') filter.status = String(status).trim();
+
+  try {
+    const logs = await ServiceLog.find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .limit(limit)
+      .populate('serviceUserId', 'name phone approvalStatus')
+      .lean();
+    return res.json({
+      serviceLogs: logs.map((row) => ({
+        ...row,
+        serviceUserName: row.serviceUserId?.name ?? '—',
+        serviceUserPhone: row.serviceUserId?.phone ?? '—',
+      })),
+    });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list service logs' });
+  }
+});
+
+router.get('/sales-users', requireAdmin, async (req, res) => {
+  try {
+    const users = await User.find({ designation: 'sales' })
+      .select('_id name phone approvalStatus managerId')
+      .sort({ name: 1 })
+      .lean();
+    return res.json({ salesUsers: users });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list sales users' });
+  }
+});
+
+router.get('/sales-logs/summary', requireAdmin, async (req, res) => {
+  const { date, salesUserId } = req.query;
+  const saleDate = parseSaleDate(date);
+  if (!saleDate) {
+    return res.status(400).json({ error: 'Query param date is required (YYYY-MM-DD or ISO)' });
+  }
+  if (salesUserId && !mongoose.isValidObjectId(salesUserId)) {
+    return res.status(400).json({ error: 'Invalid salesUserId' });
+  }
+
+  const match = { saleDate };
+  if (salesUserId) {
+    match.salesUserId = new mongoose.Types.ObjectId(salesUserId);
+  }
+
+  try {
+    const [totals, bySalesUser] = await Promise.all([
+      DailySale.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: null,
+            totalLogs: { $sum: 1 },
+            totalAmount: { $sum: '$amount' },
+            avgAmount: { $avg: '$amount' },
+            activeSalesUsers: { $addToSet: '$salesUserId' },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            totalLogs: 1,
+            totalAmount: 1,
+            avgAmount: 1,
+            activeSalesUsers: { $size: '$activeSalesUsers' },
+          },
+        },
+      ]),
+      DailySale.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: '$salesUserId',
+            totalAmount: { $sum: '$amount' },
+            logCount: { $sum: 1 },
+          },
+        },
+        { $sort: { totalAmount: -1, logCount: -1 } },
+        { $limit: 10 },
+        {
+          $lookup: {
+            from: 'users',
+            localField: '_id',
+            foreignField: '_id',
+            as: 'salesUser',
+          },
+        },
+        { $unwind: { path: '$salesUser', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            _id: 0,
+            salesUserId: '$_id',
+            salesUserName: '$salesUser.name',
+            salesUserPhone: '$salesUser.phone',
+            totalAmount: 1,
+            logCount: 1,
+          },
+        },
+      ]),
+    ]);
+
+    const t = totals[0] || {
+      totalLogs: 0,
+      totalAmount: 0,
+      avgAmount: 0,
+      activeSalesUsers: 0,
+    };
+
+    return res.json({
+      summary: {
+        date: saleDate,
+        totalLogs: t.totalLogs || 0,
+        totalAmount: Number(t.totalAmount || 0),
+        avgAmount: Number(t.avgAmount || 0),
+        activeSalesUsers: t.activeSalesUsers || 0,
+        topSalesUsers: bySalesUser,
+      },
+    });
+  } catch {
+    return res.status(500).json({ error: 'Failed to load sales log summary' });
+  }
+});
+
+router.get('/sales-logs', requireAdmin, async (req, res) => {
+  const { date, salesUserId } = req.query;
+  const saleDate = parseSaleDate(date);
+  if (!saleDate) {
+    return res.status(400).json({ error: 'Query param date is required (YYYY-MM-DD or ISO)' });
+  }
+  if (salesUserId && !mongoose.isValidObjectId(salesUserId)) {
+    return res.status(400).json({ error: 'Invalid salesUserId' });
+  }
+
+  const limitRaw = Number(req.query?.limit);
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(500, Math.trunc(limitRaw)))
+    : 250;
+
+  const filter = { saleDate };
+  if (salesUserId) filter.salesUserId = salesUserId;
+
+  try {
+    const logs = await DailySale.find(filter)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .populate('salesUserId', 'name phone managerId approvalStatus')
+      .lean();
+
+    return res.json({
+      dailySales: logs.map((row) => ({
+        ...row,
+        salesUserName: row.salesUserId?.name ?? '—',
+        salesUserPhone: row.salesUserId?.phone ?? '—',
+      })),
+    });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list daily sales logs' });
   }
 });
 

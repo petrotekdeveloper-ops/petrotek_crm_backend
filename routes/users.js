@@ -9,7 +9,7 @@ const { requireManager } = require('../middleware/managerAuth');
 const router = express.Router();
 const BCRYPT_ROUNDS = 10;
 
-const DESIGNATIONS = ['manager', 'sales', 'driver'];
+const DESIGNATIONS = ['manager', 'sales', 'driver', 'service'];
 
 function signUserToken(user) {
   return jwt.sign(
@@ -68,8 +68,6 @@ router.post('/register', async (req, res) => {
     String(name).trim() === '' ||
     phone == null ||
     String(phone).trim() === '' ||
-    email === undefined ||
-    dob === undefined ||
     designation == null ||
     String(designation).trim() === '' ||
     password == null ||
@@ -77,13 +75,13 @@ router.post('/register', async (req, res) => {
   ) {
     return res.status(400).json({
       error:
-        'All fields are required: name, phone, email, dob, designation, password. Sales also require managerId and drivers require vehicleNumber.',
+        'Required fields: name, phone, designation, password.',
     });
   }
 
-  if (!['sales', 'driver', 'manager'].includes(designation)) {
+  if (!['sales', 'driver', 'manager', 'service'].includes(designation)) {
     return res.status(400).json({
-      error: 'Self-registration is only available for sales, driver, or manager roles',
+      error: 'Self-registration is only available for sales, driver, service, or manager roles',
     });
   }
 
@@ -93,24 +91,23 @@ router.post('/register', async (req, res) => {
     });
   }
 
-  if (designation === 'sales') {
-    if (!managerId || !mongoose.isValidObjectId(managerId)) {
-      return res.status(400).json({
-        error: 'Sales registrations require a valid managerId',
-      });
-    }
+  if (designation !== 'sales' && managerId != null && String(managerId).trim() !== '') {
+    return res.status(400).json({
+      error: 'managerId can only be provided for sales registrations',
+    });
   }
-  if (designation === 'driver') {
-    if (vehicleNumber == null || String(vehicleNumber).trim() === '') {
-      return res.status(400).json({
-        error: 'Driver registrations require vehicleNumber',
-      });
-    }
+  if (designation !== 'driver' && vehicleNumber != null && String(vehicleNumber).trim() !== '') {
+    return res.status(400).json({
+      error: 'vehicleNumber can only be provided for driver registrations',
+    });
   }
 
-  const dobDate = new Date(dob);
-  if (Number.isNaN(dobDate.getTime())) {
-    return res.status(400).json({ error: 'dob must be a valid date' });
+  let dobDate;
+  if (dob != null && String(dob).trim() !== '') {
+    dobDate = new Date(dob);
+    if (Number.isNaN(dobDate.getTime())) {
+      return res.status(400).json({ error: 'dob must be a valid date' });
+    }
   }
 
   const emailRaw = email == null ? '' : String(email).trim();
@@ -118,7 +115,7 @@ router.post('/register', async (req, res) => {
 
   try {
     let resolvedManagerId = null;
-    if (designation === 'sales') {
+    if (designation === 'sales' && managerId && String(managerId).trim() !== '') {
       const manager = await User.findById(managerId);
       if (
         !manager ||
@@ -140,15 +137,17 @@ router.post('/register', async (req, res) => {
       dob: dobDate,
       designation,
       vehicleNumber:
-        designation === 'driver' ? String(vehicleNumber).trim() : undefined,
+        designation === 'driver' && vehicleNumber != null && String(vehicleNumber).trim() !== ''
+          ? String(vehicleNumber).trim()
+          : undefined,
       password: passwordHash,
       managerId: resolvedManagerId,
       approvalStatus: 'pending',
     });
 
     const message =
-      designation === 'driver'
-        ? 'Registration received. Driver accounts are approved by an administrator only.'
+      designation === 'driver' || designation === 'service'
+        ? 'Registration received. Driver and service accounts are approved by an administrator only.'
         : designation === 'manager'
           ? 'Registration received. Manager accounts are approved by an administrator before you can sign in.'
           : 'Registration received. You can sign in after your manager or an administrator approves your account.';
@@ -198,7 +197,9 @@ router.post('/login', async (req, res) => {
     const status = approvalStatus(user);
     if (status === 'pending') {
       const pendingMsg =
-        user.designation === 'driver' || user.designation === 'manager'
+        user.designation === 'driver' ||
+        user.designation === 'service' ||
+        user.designation === 'manager'
           ? 'Account is pending approval from an administrator'
           : 'Account is pending approval from your manager or an administrator';
       return res.status(403).json({ error: pendingMsg });

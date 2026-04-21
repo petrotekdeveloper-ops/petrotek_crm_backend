@@ -10,6 +10,7 @@ const {
   getSalesUserMonthlyTargetsMap,
   sumDefinedTargets,
   monthUtcRange,
+  parseSaleDate,
 } = require('../utils/salesHelpers');
 
 /** Daily rows + month summary for one rep (manager must own this sales user). */
@@ -82,6 +83,109 @@ function parseYearMonthQuery(query) {
   return { year: y, month: m };
 }
 
+/** Manager's own daily logs (same shape as sales, but owner is req.manager). */
+router.get('/my-daily', requireManager, async (req, res) => {
+  const ym = parseYearMonthQuery(req.query);
+  if (!ym) {
+    return res.status(400).json({
+      error: 'Query params year and month (1-12) are required',
+    });
+  }
+  const { start, end } = monthUtcRange(ym.year, ym.month);
+  try {
+    const rows = await DailySale.find({
+      salesUserId: req.manager._id,
+      saleDate: { $gte: start, $lt: end },
+    })
+      .sort({ saleDate: -1, createdAt: -1 })
+      .lean();
+    return res.json({ dailySales: rows });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list manager daily logs' });
+  }
+});
+
+router.post('/my-daily', requireManager, async (req, res) => {
+  const { date, amount, note } = req.body || {};
+  const saleDate = parseSaleDate(date);
+  if (!saleDate) {
+    return res.status(400).json({
+      error: 'date is required (YYYY-MM-DD or ISO)',
+    });
+  }
+  const amt = Number(amount);
+  if (!Number.isFinite(amt) || amt < 0) {
+    return res.status(400).json({ error: 'amount must be a non-negative number' });
+  }
+  const noteStr =
+    note == null || note === '' ? '' : String(note).trim().slice(0, 2000);
+
+  try {
+    const doc = await DailySale.create({
+      salesUserId: req.manager._id,
+      saleDate,
+      amount: amt,
+      note: noteStr,
+      entryKind: 'manager',
+    });
+    return res.status(201).json({ dailySale: doc });
+  } catch {
+    return res.status(500).json({ error: 'Failed to save manager daily log' });
+  }
+});
+
+router.put('/my-daily/:id', requireManager, async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+  const { date, amount, note } = req.body || {};
+  try {
+    const doc = await DailySale.findById(id);
+    if (!doc || String(doc.salesUserId) !== String(req.manager._id)) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    if (date !== undefined) {
+      const sd = parseSaleDate(date);
+      if (!sd) {
+        return res.status(400).json({ error: 'Invalid date' });
+      }
+      doc.saleDate = sd;
+    }
+    if (amount !== undefined) {
+      const amt = Number(amount);
+      if (!Number.isFinite(amt) || amt < 0) {
+        return res.status(400).json({ error: 'amount must be a non-negative number' });
+      }
+      doc.amount = amt;
+    }
+    if (note !== undefined) {
+      doc.note = note == null || note === '' ? '' : String(note).trim().slice(0, 2000);
+    }
+    await doc.save();
+    return res.json({ dailySale: doc });
+  } catch {
+    return res.status(500).json({ error: 'Failed to update manager daily log' });
+  }
+});
+
+router.delete('/my-daily/:id', requireManager, async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+  try {
+    const doc = await DailySale.findOneAndDelete({
+      _id: id,
+      salesUserId: req.manager._id,
+    });
+    if (!doc) return res.status(404).json({ error: 'Not found' });
+    return res.json({ message: 'Deleted' });
+  } catch {
+    return res.status(500).json({ error: 'Failed to delete manager daily log' });
+  }
+});
+
 /** Set this rep's monthly target (per-user only). */
 router.put('/sales-user-target', requireManager, async (req, res) => {
   const ym = parseYearMonthBody(req.body);
@@ -124,7 +228,7 @@ router.put('/sales-user-target', requireManager, async (req, res) => {
           targetAmount: amt,
         },
       },
-      { upsert: true, new: true, runValidators: true }
+      { upsert: true, returnDocument: 'after', runValidators: true }
     );
     return res.json({
       salesUserTarget: {

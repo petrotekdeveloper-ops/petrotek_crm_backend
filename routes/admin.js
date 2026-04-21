@@ -12,6 +12,8 @@ const { requireAdmin } = require('../middleware/adminAuth');
 const router = express.Router();
 const BCRYPT_ROUNDS = 10;
 const DESIGNATIONS = ['manager', 'sales', 'driver', 'service'];
+const COMPANY_VALUES = ['Petrotek', 'Seltec'];
+const UAE_PHONE_RE = /^\+971\d{1,9}$/;
 
 function userResponse(doc) {
   const o = doc.toObject ? doc.toObject() : { ...doc };
@@ -36,6 +38,28 @@ function monthUtcRange(year, month) {
   const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
   const end = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
   return { start, end };
+}
+
+/** Admin sales logs: single day (date=) or whole calendar month (year=&month=). */
+function resolveAdminSalesLogsFilter(query) {
+  const ym = parseYearMonth(query);
+  if (ym) {
+    const { start, end } = monthUtcRange(ym.year, ym.month);
+    return {
+      filter: { saleDate: { $gte: start, $lt: end } },
+      summaryMeta: { year: ym.year, month: ym.month },
+      isMonthRange: true,
+    };
+  }
+  const saleDate = parseSaleDate(query?.date);
+  if (saleDate) {
+    return {
+      filter: { saleDate },
+      summaryMeta: { date: saleDate },
+      isMonthRange: false,
+    };
+  }
+  return null;
 }
 
 router.post('/login', (req, res) => {
@@ -88,7 +112,17 @@ router.get('/users/:id', requireAdmin, async (req, res) => {
 });
 
 router.post('/users', requireAdmin, async (req, res) => {
-  const { name, phone, email, dob, designation, password, managerId, vehicleNumber } =
+  const {
+    name,
+    phone,
+    email,
+    dob,
+    designation,
+    password,
+    managerId,
+    vehicleNumber,
+    company,
+  } =
     req.body || {};
 
   if (
@@ -114,10 +148,32 @@ router.post('/users', requireAdmin, async (req, res) => {
       error: `designation must be one of: ${DESIGNATIONS.join(', ')}`,
     });
   }
+  if (!UAE_PHONE_RE.test(String(phone).trim())) {
+    return res.status(400).json({ error: 'phone must be in +971 format with up to 9 digits' });
+  }
   if (designation === 'driver') {
     if (vehicleNumber == null || String(vehicleNumber).trim() === '') {
       return res.status(400).json({ error: 'vehicleNumber is required for drivers' });
     }
+  }
+  if (
+    designation !== 'manager' &&
+    designation !== 'sales' &&
+    company != null &&
+    String(company).trim() !== ''
+  ) {
+    return res.status(400).json({ error: 'company can only be provided for manager or sales users' });
+  }
+
+  const companyValue =
+    company == null || String(company).trim() === '' ? 'Petrotek' : String(company).trim();
+  if (
+    (designation === 'manager' || designation === 'sales') &&
+    !COMPANY_VALUES.includes(companyValue)
+  ) {
+    return res.status(400).json({
+      error: `company must be one of: ${COMPANY_VALUES.join(', ')}`,
+    });
   }
 
   if (designation === 'sales') {
@@ -154,6 +210,10 @@ router.post('/users', requireAdmin, async (req, res) => {
       email: emailValue,
       dob: dobDate,
       designation,
+      company:
+        designation === 'manager' || designation === 'sales'
+          ? companyValue
+          : undefined,
       vehicleNumber:
         designation === 'driver' ? String(vehicleNumber).trim() : undefined,
       password: passwordHash,
@@ -176,8 +236,18 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
   if (!mongoose.isValidObjectId(id)) return badUserId(res);
 
-  const { name, phone, email, dob, designation, password, managerId, vehicleNumber, approvalStatus } =
-    req.body || {};
+  const {
+    name,
+    phone,
+    email,
+    dob,
+    designation,
+    password,
+    managerId,
+    vehicleNumber,
+    approvalStatus,
+    company,
+  } = req.body || {};
   const updates = {};
 
   if (name !== undefined) {
@@ -190,7 +260,11 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     if (String(phone).trim() === '') {
       return res.status(400).json({ error: 'phone cannot be empty' });
     }
-    updates.phone = String(phone).trim();
+    const normalizedPhone = String(phone).trim();
+    if (!UAE_PHONE_RE.test(normalizedPhone)) {
+      return res.status(400).json({ error: 'phone must be in +971 format with up to 9 digits' });
+    }
+    updates.phone = normalizedPhone;
   }
   if (email !== undefined) {
     const emailRaw = email == null ? '' : String(email).trim();
@@ -245,8 +319,21 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     }
     updates.approvalStatus = approvalStatus;
   }
+  if (company !== undefined) {
+    if (company === null || String(company).trim() === '') {
+      updates.company = undefined;
+    } else {
+      const companyValue = String(company).trim();
+      if (!COMPANY_VALUES.includes(companyValue)) {
+        return res.status(400).json({
+          error: `company must be one of: ${COMPANY_VALUES.join(', ')}`,
+        });
+      }
+      updates.company = companyValue;
+    }
+  }
 
-  const currentUser = await User.findById(id).select('designation vehicleNumber managerId');
+  const currentUser = await User.findById(id).select('designation vehicleNumber managerId company');
   if (!currentUser) return res.status(404).json({ error: 'User not found' });
 
   const designationToValidate = updates.designation ?? currentUser.designation;
@@ -264,6 +351,14 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
   if (designationToValidate !== 'driver') {
     updates.vehicleNumber = undefined;
   }
+  const resolvedCompany = updates.company !== undefined ? updates.company : currentUser.company;
+  if (designationToValidate === 'manager' || designationToValidate === 'sales') {
+    if (!resolvedCompany || String(resolvedCompany).trim() === '') {
+      updates.company = 'Petrotek';
+    }
+  } else {
+    updates.company = undefined;
+  }
   const resolvedManagerId =
     updates.managerId !== undefined ? updates.managerId : currentUser.managerId;
   if (designationToValidate === 'sales') {
@@ -280,7 +375,7 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
 
   try {
     const user = await User.findByIdAndUpdate(id, updates, {
-      new: true,
+      returnDocument: 'after',
       runValidators: true,
     });
     if (!user) return res.status(404).json({ error: 'User not found' });
@@ -289,6 +384,7 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     if (err.code === 11000) {
       return res.status(409).json({ error: 'Phone number already in use' });
     }
+    console.error('Admin user update failed:', err);
     return res.status(500).json({ error: 'Failed to update user' });
   }
 });
@@ -352,7 +448,7 @@ router.put('/sales-user-targets', requireAdmin, async (req, res) => {
           targetAmount: amt,
         },
       },
-      { upsert: true, new: true, runValidators: true }
+      { upsert: true, returnDocument: 'after', runValidators: true }
     );
     return res.json({
       salesUserTarget: {
@@ -512,7 +608,7 @@ router.get('/service-logs', requireAdmin, async (req, res) => {
 router.get('/sales-users', requireAdmin, async (req, res) => {
   try {
     const users = await User.find({ designation: 'sales' })
-      .select('_id name phone approvalStatus managerId')
+      .select('_id name phone approvalStatus managerId company')
       .sort({ name: 1 })
       .lean();
     return res.json({ salesUsers: users });
@@ -522,16 +618,18 @@ router.get('/sales-users', requireAdmin, async (req, res) => {
 });
 
 router.get('/sales-logs/summary', requireAdmin, async (req, res) => {
-  const { date, salesUserId } = req.query;
-  const saleDate = parseSaleDate(date);
-  if (!saleDate) {
-    return res.status(400).json({ error: 'Query param date is required (YYYY-MM-DD or ISO)' });
+  const { salesUserId } = req.query;
+  const resolved = resolveAdminSalesLogsFilter(req.query);
+  if (!resolved) {
+    return res.status(400).json({
+      error: 'Provide date=YYYY-MM-DD for a single day, or year=YYYY&month=MM (1–12) for a month',
+    });
   }
   if (salesUserId && !mongoose.isValidObjectId(salesUserId)) {
     return res.status(400).json({ error: 'Invalid salesUserId' });
   }
 
-  const match = { saleDate };
+  const match = { ...resolved.filter };
   if (salesUserId) {
     match.salesUserId = new mongoose.Types.ObjectId(salesUserId);
   }
@@ -601,7 +699,7 @@ router.get('/sales-logs/summary', requireAdmin, async (req, res) => {
 
     return res.json({
       summary: {
-        date: saleDate,
+        ...resolved.summaryMeta,
         totalLogs: t.totalLogs || 0,
         totalAmount: Number(t.totalAmount || 0),
         avgAmount: Number(t.avgAmount || 0),
@@ -615,26 +713,30 @@ router.get('/sales-logs/summary', requireAdmin, async (req, res) => {
 });
 
 router.get('/sales-logs', requireAdmin, async (req, res) => {
-  const { date, salesUserId } = req.query;
-  const saleDate = parseSaleDate(date);
-  if (!saleDate) {
-    return res.status(400).json({ error: 'Query param date is required (YYYY-MM-DD or ISO)' });
+  const { salesUserId } = req.query;
+  const resolved = resolveAdminSalesLogsFilter(req.query);
+  if (!resolved) {
+    return res.status(400).json({
+      error: 'Provide date=YYYY-MM-DD for a single day, or year=YYYY&month=MM (1–12) for a month',
+    });
   }
   if (salesUserId && !mongoose.isValidObjectId(salesUserId)) {
     return res.status(400).json({ error: 'Invalid salesUserId' });
   }
 
   const limitRaw = Number(req.query?.limit);
+  const maxLimit = resolved.isMonthRange ? 5000 : 500;
+  const defaultLimit = resolved.isMonthRange ? 2000 : 250;
   const limit = Number.isFinite(limitRaw)
-    ? Math.max(1, Math.min(500, Math.trunc(limitRaw)))
-    : 250;
+    ? Math.max(1, Math.min(maxLimit, Math.trunc(limitRaw)))
+    : defaultLimit;
 
-  const filter = { saleDate };
+  const filter = { ...resolved.filter };
   if (salesUserId) filter.salesUserId = salesUserId;
 
   try {
     const logs = await DailySale.find(filter)
-      .sort({ createdAt: -1 })
+      .sort({ saleDate: -1, createdAt: -1 })
       .limit(limit)
       .populate('salesUserId', 'name phone managerId approvalStatus')
       .lean();

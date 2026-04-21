@@ -22,6 +22,11 @@ const dailySaleSchema = new mongoose.Schema(
       trim: true,
       default: '',
     },
+    entryKind: {
+      type: String,
+      enum: ['sales', 'manager'],
+      default: 'sales',
+    },
   },
   { timestamps: true }
 );

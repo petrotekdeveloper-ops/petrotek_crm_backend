@@ -24,6 +24,7 @@ const salesRoutes = require('./routes/sales');
 const managerTeamRoutes = require('./routes/managerTeam');
 const tripRoutes = require('./routes/trips');
 const serviceRoutes = require('./routes/service');
+const User = require('./models/users');
 
 app.use('/api/admin', adminRoutes);
 app.use('/api/users', userRoutes);
@@ -35,6 +36,13 @@ app.use('/api/service', serviceRoutes);
 async function connectDB() {
     try {
       await mongoose.connect(process.env.MONGODB_URI);
+      await User.updateMany(
+        {
+          designation: { $in: ['manager', 'sales'] },
+          $or: [{ company: { $exists: false } }, { company: null }, { company: '' }],
+        },
+        { $set: { company: 'Petrotek' } }
+      );
       console.log("MongoDB Connected");
     } catch (err) {
       console.log("Mongo Error:", err);

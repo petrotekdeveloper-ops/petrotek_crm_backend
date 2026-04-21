@@ -10,6 +10,7 @@ const router = express.Router();
 const BCRYPT_ROUNDS = 10;
 
 const DESIGNATIONS = ['manager', 'sales', 'driver', 'service'];
+const COMPANY_VALUES = ['Petrotek', 'Seltec'];
 
 function signUserToken(user) {
   return jwt.sign(
@@ -40,7 +41,7 @@ router.get('/registration-managers', async (req, res) => {
       designation: 'manager',
       approvalStatus: 'approved',
     })
-      .select('_id name phone')
+      .select('_id name phone company')
       .sort({ name: 1 })
       .lean();
     return res.json({
@@ -48,6 +49,7 @@ router.get('/registration-managers', async (req, res) => {
         _id: m._id.toString(),
         name: m.name,
         phone: m.phone,
+        company: m.company ?? 'Petrotek',
       })),
     });
   } catch {
@@ -60,7 +62,7 @@ router.post('/register', async (req, res) => {
     return res.status(500).json({ error: 'Server configuration error' });
   }
 
-  const { name, phone, email, dob, designation, password, managerId, vehicleNumber } =
+  const { name, phone, email, dob, designation, password, managerId, vehicleNumber, company } =
     req.body || {};
 
   if (
@@ -101,6 +103,27 @@ router.post('/register', async (req, res) => {
       error: 'vehicleNumber can only be provided for driver registrations',
     });
   }
+  if (
+    designation !== 'manager' &&
+    designation !== 'sales' &&
+    company != null &&
+    String(company).trim() !== ''
+  ) {
+    return res.status(400).json({
+      error: 'company can only be provided for manager or sales registrations',
+    });
+  }
+
+  const companyValue =
+    company == null || String(company).trim() === '' ? 'Petrotek' : String(company).trim();
+  if (
+    (designation === 'manager' || designation === 'sales') &&
+    !COMPANY_VALUES.includes(companyValue)
+  ) {
+    return res.status(400).json({
+      error: `company must be one of: ${COMPANY_VALUES.join(', ')}`,
+    });
+  }
 
   let dobDate;
   if (dob != null && String(dob).trim() !== '') {
@@ -136,6 +159,10 @@ router.post('/register', async (req, res) => {
       email: emailValue,
       dob: dobDate,
       designation,
+      company:
+        designation === 'manager' || designation === 'sales'
+          ? companyValue
+          : undefined,
       vehicleNumber:
         designation === 'driver' && vehicleNumber != null && String(vehicleNumber).trim() !== ''
           ? String(vehicleNumber).trim()

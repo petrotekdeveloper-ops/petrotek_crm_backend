@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 
+const COMPANY_VALUES = ['Petrotek', 'Seltec'];
+
 const userSchema = new mongoose.Schema(
   {
     name: {
@@ -26,6 +28,25 @@ const userSchema = new mongoose.Schema(
       enum: ['manager', 'sales', 'driver', 'service'],
       required: true,
     },
+    company: {
+      type: String,
+      enum: COMPANY_VALUES,
+      trim: true,
+      default: undefined,
+      validate: {
+        validator(value) {
+          // During update validators, `this` can be a query object without designation.
+          // In that case, defer role checks to route-level validation/update logic.
+          if (!this || this.designation == null) return true;
+          const appliesToRole =
+            this.designation === 'manager' || this.designation === 'sales';
+          if (!appliesToRole) return value == null;
+          return COMPANY_VALUES.includes(value);
+        },
+        message:
+          'company is only applicable to manager/sales and must be Petrotek or Seltec',
+      },
+    },
     vehicleNumber: {
       type: String,
       trim: true,
@@ -49,5 +70,18 @@ const userSchema = new mongoose.Schema(
   },
   { timestamps: true }
 );
+
+userSchema.pre('validate', function applyCompanyRules(next) {
+  const appliesToRole =
+    this.designation === 'manager' || this.designation === 'sales';
+  if (appliesToRole) {
+    if (this.company == null || String(this.company).trim() === '') {
+      this.company = 'Petrotek';
+    }
+  } else {
+    this.company = undefined;
+  }
+  next();
+});
 
 module.exports = mongoose.model('User', userSchema);

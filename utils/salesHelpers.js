@@ -124,6 +124,19 @@ async function salesUserMonthSummary(salesUser, year, month) {
   };
 }
 
+const DUPLICATE_DAILY_LOG_MESSAGE =
+  'Only one daily log per date is allowed. Edit or delete the existing entry for this date.';
+
+/** True if another DailySale exists for this user on the same calendar day (excludes one doc for PUT). */
+async function hasDailySaleOnDate(salesUserId, saleDate, excludeDocId = null) {
+  const q = { salesUserId, saleDate };
+  if (excludeDocId != null) {
+    q._id = { $ne: excludeDocId };
+  }
+  const found = await DailySale.findOne(q).select('_id').lean();
+  return Boolean(found);
+}
+
 module.exports = {
   monthUtcRange,
   parseSaleDate,
@@ -132,4 +145,6 @@ module.exports = {
   getSalesUserMonthlyTargetsMap,
   sumDefinedTargets,
   salesUserMonthSummary,
+  hasDailySaleOnDate,
+  DUPLICATE_DAILY_LOG_MESSAGE,
 };

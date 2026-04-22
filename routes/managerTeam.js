@@ -11,6 +11,8 @@ const {
   sumDefinedTargets,
   monthUtcRange,
   parseSaleDate,
+  hasDailySaleOnDate,
+  DUPLICATE_DAILY_LOG_MESSAGE,
 } = require('../utils/salesHelpers');
 
 /** Daily rows + month summary for one rep (manager must own this sales user). */
@@ -21,7 +23,7 @@ async function repDailySalesPayload(managerId, salesUserId, year, month) {
     designation: 'sales',
     approvalStatus: 'approved',
   })
-    .select('name phone')
+    .select('name phone email company designation dob')
     .lean();
   if (!rep) return null;
   const { start, end } = monthUtcRange(year, month);
@@ -51,6 +53,10 @@ async function repDailySalesPayload(managerId, salesUserId, year, month) {
       userId: rep._id,
       name: rep.name,
       phone: rep.phone,
+      email: rep.email || '',
+      company: rep.company || '',
+      designation: rep.designation,
+      dob: rep.dob,
     },
     year,
     month,
@@ -121,6 +127,9 @@ router.post('/my-daily', requireManager, async (req, res) => {
     note == null || note === '' ? '' : String(note).trim().slice(0, 2000);
 
   try {
+    if (await hasDailySaleOnDate(req.manager._id, saleDate)) {
+      return res.status(409).json({ error: DUPLICATE_DAILY_LOG_MESSAGE });
+    }
     const doc = await DailySale.create({
       salesUserId: req.manager._id,
       saleDate,
@@ -129,7 +138,10 @@ router.post('/my-daily', requireManager, async (req, res) => {
       entryKind: 'manager',
     });
     return res.status(201).json({ dailySale: doc });
-  } catch {
+  } catch (err) {
+    if (err && err.code === 11000) {
+      return res.status(409).json({ error: DUPLICATE_DAILY_LOG_MESSAGE });
+    }
     return res.status(500).json({ error: 'Failed to save manager daily log' });
   }
 });
@@ -150,6 +162,9 @@ router.put('/my-daily/:id', requireManager, async (req, res) => {
       if (!sd) {
         return res.status(400).json({ error: 'Invalid date' });
       }
+      if (await hasDailySaleOnDate(req.manager._id, sd, doc._id)) {
+        return res.status(409).json({ error: DUPLICATE_DAILY_LOG_MESSAGE });
+      }
       doc.saleDate = sd;
     }
     if (amount !== undefined) {
@@ -164,7 +179,10 @@ router.put('/my-daily/:id', requireManager, async (req, res) => {
     }
     await doc.save();
     return res.json({ dailySale: doc });
-  } catch {
+  } catch (err) {
+    if (err && err.code === 11000) {
+      return res.status(409).json({ error: DUPLICATE_DAILY_LOG_MESSAGE });
+    }
     return res.status(500).json({ error: 'Failed to update manager daily log' });
   }
 });

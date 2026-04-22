@@ -31,6 +31,7 @@ const dailySaleSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-dailySaleSchema.index({ salesUserId: 1, saleDate: 1 });
+/** One log per sales user (or manager on own logs) per calendar day (saleDate is UTC midnight). */
+dailySaleSchema.index({ salesUserId: 1, saleDate: 1 }, { unique: true });
 
 module.exports = mongoose.model('DailySale', dailySaleSchema);

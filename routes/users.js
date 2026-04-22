@@ -77,7 +77,7 @@ router.post('/register', async (req, res) => {
   ) {
     return res.status(400).json({
       error:
-        'Required fields: name, phone, designation, password.',
+        'Required fields: name, phone, designation, password. Email and date of birth are optional.',
     });
   }
 
@@ -153,24 +153,29 @@ router.post('/register', async (req, res) => {
     }
 
     const passwordHash = await bcrypt.hash(String(password), BCRYPT_ROUNDS);
-    const user = await User.create({
+
+    const doc = {
       name: String(name).trim(),
       phone: String(phone).trim(),
-      email: emailValue,
-      dob: dobDate,
       designation,
-      company:
-        designation === 'manager' || designation === 'sales'
-          ? companyValue
-          : undefined,
-      vehicleNumber:
-        designation === 'driver' && vehicleNumber != null && String(vehicleNumber).trim() !== ''
-          ? String(vehicleNumber).trim()
-          : undefined,
       password: passwordHash,
       managerId: resolvedManagerId,
       approvalStatus: 'pending',
-    });
+    };
+    if (emailValue) doc.email = emailValue;
+    if (dobDate != null) doc.dob = dobDate;
+    if (designation === 'manager' || designation === 'sales') {
+      doc.company = companyValue;
+    }
+    if (
+      designation === 'driver' &&
+      vehicleNumber != null &&
+      String(vehicleNumber).trim() !== ''
+    ) {
+      doc.vehicleNumber = String(vehicleNumber).trim();
+    }
+
+    const user = await User.create(doc);
 
     const message =
       designation === 'driver' || designation === 'service'

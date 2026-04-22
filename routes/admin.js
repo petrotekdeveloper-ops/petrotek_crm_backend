@@ -130,8 +130,6 @@ router.post('/users', requireAdmin, async (req, res) => {
     String(name).trim() === '' ||
     phone == null ||
     String(phone).trim() === '' ||
-    email === undefined ||
-    dob === undefined ||
     designation == null ||
     String(designation).trim() === '' ||
     password == null ||
@@ -139,7 +137,7 @@ router.post('/users', requireAdmin, async (req, res) => {
   ) {
     return res.status(400).json({
       error:
-        'All fields are required: name, phone, email, dob, designation, password (sales require managerId, drivers require vehicleNumber)',
+        'Required fields: name, phone, designation, password. Email and date of birth are optional. Sales users require managerId; drivers require vehicleNumber.',
     });
   }
 
@@ -194,41 +192,67 @@ router.post('/users', requireAdmin, async (req, res) => {
     }
   }
 
-  const dobDate = new Date(dob);
-  if (Number.isNaN(dobDate.getTime())) {
-    return res.status(400).json({ error: 'dob must be a valid date' });
+  let dobDate;
+  if (dob != null && String(dob).trim() !== '') {
+    dobDate = new Date(dob);
+    if (Number.isNaN(dobDate.getTime())) {
+      return res.status(400).json({ error: 'dob must be a valid date' });
+    }
   }
 
   const emailRaw = email == null ? '' : String(email).trim();
-  const emailValue = emailRaw === '' ? undefined : emailRaw.toLowerCase();
+  const emailValue = emailRaw === '' ? '' : emailRaw.toLowerCase();
 
   try {
     const passwordHash = await bcrypt.hash(String(password), BCRYPT_ROUNDS);
-    const user = await User.create({
+
+    /** Avoid passing `undefined` for optional paths — Mongoose 9 can throw on cast in some cases. */
+    const doc = {
       name: String(name).trim(),
       phone: String(phone).trim(),
-      email: emailValue,
-      dob: dobDate,
       designation,
-      company:
-        designation === 'manager' || designation === 'sales'
-          ? companyValue
-          : undefined,
-      vehicleNumber:
-        designation === 'driver' ? String(vehicleNumber).trim() : undefined,
       password: passwordHash,
+      approvalStatus: 'approved',
       managerId:
         designation === 'sales' && managerId && String(managerId).trim() !== ''
           ? managerId
           : null,
-      approvalStatus: 'approved',
-    });
+    };
+    if (emailValue) doc.email = emailValue;
+    if (dobDate != null) doc.dob = dobDate;
+    if (designation === 'manager' || designation === 'sales') {
+      doc.company = companyValue;
+    }
+    if (designation === 'driver') {
+      doc.vehicleNumber = String(vehicleNumber).trim();
+    }
+
+    const user = await User.create(doc);
     return res.status(201).json({ user: userResponse(user) });
   } catch (err) {
-    if (err.code === 11000) {
+    console.error('[admin] POST /users failed:', err?.message || err);
+    if (err?.stack) console.error(err.stack);
+
+    const dup =
+      err?.code === 11000 ||
+      err?.cause?.code === 11000 ||
+      (typeof err?.message === 'string' && err.message.includes('E11000'));
+    if (dup) {
       return res.status(409).json({ error: 'Phone number already registered' });
     }
-    return res.status(500).json({ error: 'Failed to create user' });
+    if (err?.name === 'ValidationError') {
+      const msgs = Object.values(err.errors || {})
+        .map((e) => e.message)
+        .filter(Boolean)
+        .join(' ');
+      return res.status(400).json({
+        error: msgs || 'Validation failed',
+      });
+    }
+    return res.status(500).json({
+      error: 'Failed to create user',
+      detail: process.env.NODE_ENV !== 'production' ? err?.message : undefined,
+    });
   }
 });
 

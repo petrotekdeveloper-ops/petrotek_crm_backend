@@ -71,7 +71,8 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-userSchema.pre('validate', function applyCompanyRules(next) {
+// Mongoose 9+: callback `next()` is not passed to all document hooks — use async middleware.
+userSchema.pre('validate', async function applyCompanyRules() {
   const appliesToRole =
     this.designation === 'manager' || this.designation === 'sales';
   if (appliesToRole) {
@@ -81,7 +82,6 @@ userSchema.pre('validate', function applyCompanyRules(next) {
   } else {
     this.company = undefined;
   }
-  next();
 });
 
 module.exports = mongoose.model('User', userSchema);

@@ -272,6 +272,11 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     approvalStatus,
     company,
   } = req.body || {};
+  /** Quick approve/reject from admin UI sends only this field — skip role profile rules (manager, vehicle, etc.). */
+  const rawBody = req.body || {};
+  const rawKeys = Object.keys(rawBody);
+  const onlyApprovalStatus =
+    rawKeys.length === 1 && rawKeys[0] === 'approvalStatus';
   const updates = {};
 
   if (name !== undefined) {
@@ -360,37 +365,39 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
   const currentUser = await User.findById(id).select('designation vehicleNumber managerId company');
   if (!currentUser) return res.status(404).json({ error: 'User not found' });
 
-  const designationToValidate = updates.designation ?? currentUser.designation;
-  const resolvedVehicleNumber =
-    updates.vehicleNumber !== undefined
-      ? updates.vehicleNumber
-      : currentUser.vehicleNumber;
+  if (!onlyApprovalStatus) {
+    const designationToValidate = updates.designation ?? currentUser.designation;
+    const resolvedVehicleNumber =
+      updates.vehicleNumber !== undefined
+        ? updates.vehicleNumber
+        : currentUser.vehicleNumber;
 
-  if (
-    designationToValidate === 'driver' &&
-    (!resolvedVehicleNumber || String(resolvedVehicleNumber).trim() === '')
-  ) {
-    return res.status(400).json({ error: 'vehicleNumber is required for drivers' });
-  }
-  if (designationToValidate !== 'driver') {
-    updates.vehicleNumber = undefined;
-  }
-  const resolvedCompany = updates.company !== undefined ? updates.company : currentUser.company;
-  if (designationToValidate === 'manager' || designationToValidate === 'sales') {
-    if (!resolvedCompany || String(resolvedCompany).trim() === '') {
-      updates.company = 'Petrotek';
+    if (
+      designationToValidate === 'driver' &&
+      (!resolvedVehicleNumber || String(resolvedVehicleNumber).trim() === '')
+    ) {
+      return res.status(400).json({ error: 'vehicleNumber is required for drivers' });
     }
-  } else {
-    updates.company = undefined;
-  }
-  const resolvedManagerId =
-    updates.managerId !== undefined ? updates.managerId : currentUser.managerId;
-  if (designationToValidate === 'sales') {
-    if (!resolvedManagerId) {
-      return res.status(400).json({ error: 'managerId is required for sales users' });
+    if (designationToValidate !== 'driver') {
+      updates.vehicleNumber = undefined;
     }
-  } else {
-    updates.managerId = null;
+    const resolvedCompany = updates.company !== undefined ? updates.company : currentUser.company;
+    if (designationToValidate === 'manager' || designationToValidate === 'sales') {
+      if (!resolvedCompany || String(resolvedCompany).trim() === '') {
+        updates.company = 'Petrotek';
+      }
+    } else {
+      updates.company = undefined;
+    }
+    const resolvedManagerId =
+      updates.managerId !== undefined ? updates.managerId : currentUser.managerId;
+    if (designationToValidate === 'sales') {
+      if (!resolvedManagerId) {
+        return res.status(400).json({ error: 'managerId is required for sales users' });
+      }
+    } else {
+      updates.managerId = null;
+    }
   }
 
   if (Object.keys(updates).length === 0) {

@@ -25,6 +25,13 @@ function badUserId(res) {
   return res.status(400).json({ error: 'Invalid user id' });
 }
 
+/** Trim and treat empty as em dash (admin sales log listing). */
+function displaySalesUserField(v) {
+  if (v == null) return '—';
+  const s = String(v).trim();
+  return s === '' ? '—' : s;
+}
+
 function parseYearMonth(query) {
   const y = parseInt(query?.year, 10);
   const m = parseInt(query?.month, 10);
@@ -773,11 +780,21 @@ router.get('/sales-logs', requireAdmin, async (req, res) => {
       .lean();
 
     return res.json({
-      dailySales: logs.map((row) => ({
-        ...row,
-        salesUserName: row.salesUserId?.name ?? '—',
-        salesUserPhone: row.salesUserId?.phone ?? '—',
-      })),
+      dailySales: logs.map((row) => {
+        const ref = row.salesUserId;
+        const populatedUser =
+          ref &&
+          typeof ref === 'object' &&
+          !(ref instanceof mongoose.Types.ObjectId) &&
+          Object.prototype.hasOwnProperty.call(ref, 'name')
+            ? ref
+            : null;
+        return {
+          ...row,
+          salesUserName: displaySalesUserField(populatedUser?.name),
+          salesUserPhone: displaySalesUserField(populatedUser?.phone),
+        };
+      }),
     });
   } catch {
     return res.status(500).json({ error: 'Failed to list daily sales logs' });

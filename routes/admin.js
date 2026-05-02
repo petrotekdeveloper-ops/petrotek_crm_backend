@@ -6,7 +6,11 @@ const User = require('../models/users');
 const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const ServiceLog = require('../models/serviceLog');
 const DailySale = require('../models/dailySale');
-const { parseSaleDate } = require('../utils/salesHelpers');
+const {
+  parseSaleDate,
+  withMissingDailySaleZeros,
+  withMissingDailySaleZerosForDates,
+} = require('../utils/salesHelpers');
 const { requireAdmin } = require('../middleware/adminAuth');
 
 const router = express.Router();
@@ -30,6 +34,26 @@ function displaySalesUserField(v) {
   if (v == null) return '—';
   const s = String(v).trim();
   return s === '' ? '—' : s;
+}
+
+function dailySaleVirtualId(salesUserId, saleDate) {
+  return `virtual-zero:${salesUserId}:${saleDate.toISOString().slice(0, 10)}`;
+}
+
+function makeAdminZeroSaleRow(user, saleDate) {
+  return {
+    _id: dailySaleVirtualId(user._id, saleDate),
+    salesUserId: user._id,
+    saleDate,
+    amount: 0,
+    note: 'No sales log entered',
+    entryKind: 'system-zero',
+    isSystemGenerated: true,
+    createdAt: null,
+    updatedAt: null,
+    salesUserName: displaySalesUserField(user.name),
+    salesUserPhone: displaySalesUserField(user.phone),
+  };
 }
 
 function parseYearMonth(query) {
@@ -773,28 +797,56 @@ router.get('/sales-logs', requireAdmin, async (req, res) => {
   if (salesUserId) filter.salesUserId = salesUserId;
 
   try {
-    const logs = await DailySale.find(filter)
-      .sort({ saleDate: -1, createdAt: -1 })
-      .limit(limit)
-      .populate('salesUserId', 'name phone managerId approvalStatus')
-      .lean();
+    const salesUserFilter = {
+      designation: 'sales',
+      approvalStatus: 'approved',
+    };
+    if (salesUserId) {
+      salesUserFilter._id = salesUserId;
+    }
+
+    const [logs, salesUsers] = await Promise.all([
+      DailySale.find(filter)
+        .sort({ saleDate: -1, createdAt: -1 })
+        .populate('salesUserId', 'name phone managerId approvalStatus')
+        .lean(),
+      User.find(salesUserFilter).select('_id name phone').lean(),
+    ]);
+
+    const rows = logs.map((row) => {
+      const ref = row.salesUserId;
+      const populatedUser =
+        ref &&
+        typeof ref === 'object' &&
+        !(ref instanceof mongoose.Types.ObjectId) &&
+        Object.prototype.hasOwnProperty.call(ref, 'name')
+          ? ref
+          : null;
+      return {
+        ...row,
+        salesUserId: populatedUser?._id ?? row.salesUserId,
+        salesUserName: displaySalesUserField(populatedUser?.name),
+        salesUserPhone: displaySalesUserField(populatedUser?.phone),
+      };
+    });
+
+    const dailySales = resolved.isMonthRange
+      ? withMissingDailySaleZeros(
+          rows,
+          salesUsers,
+          resolved.summaryMeta.year,
+          resolved.summaryMeta.month,
+          makeAdminZeroSaleRow
+        )
+      : withMissingDailySaleZerosForDates(
+          rows,
+          salesUsers,
+          [resolved.summaryMeta.date],
+          makeAdminZeroSaleRow
+        );
 
     return res.json({
-      dailySales: logs.map((row) => {
-        const ref = row.salesUserId;
-        const populatedUser =
-          ref &&
-          typeof ref === 'object' &&
-          !(ref instanceof mongoose.Types.ObjectId) &&
-          Object.prototype.hasOwnProperty.call(ref, 'name')
-            ? ref
-            : null;
-        return {
-          ...row,
-          salesUserName: displaySalesUserField(populatedUser?.name),
-          salesUserPhone: displaySalesUserField(populatedUser?.phone),
-        };
-      }),
+      dailySales: dailySales.slice(0, limit),
     });
   } catch {
     return res.status(500).json({ error: 'Failed to list daily sales logs' });

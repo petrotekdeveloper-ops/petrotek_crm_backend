@@ -2,11 +2,94 @@ const mongoose = require('mongoose');
 const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const DailySale = require('../models/dailySale');
 
+const DAILY_SALE_ZERO_FILL_START = new Date(Date.UTC(2026, 4, 1));
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
 /** UTC bounds for calendar month (inclusive start, exclusive end for queries use $lt nextMonthStart) */
 function monthUtcRange(year, month) {
   const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
   const end = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
   return { start, end };
+}
+
+function dateKey(value) {
+  const d = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10);
+}
+
+function todayUtcMidnight() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+function zeroFillDateRange(year, month) {
+  const { start: monthStart, end: monthEnd } = monthUtcRange(year, month);
+  const start = new Date(Math.max(monthStart.getTime(), DAILY_SALE_ZERO_FILL_START.getTime()));
+  const tomorrow = new Date(todayUtcMidnight().getTime() + MS_PER_DAY);
+  const end = new Date(Math.min(monthEnd.getTime(), tomorrow.getTime()));
+
+  if (start >= end) {
+    return [];
+  }
+
+  const dates = [];
+  for (let t = start.getTime(); t < end.getTime(); t += MS_PER_DAY) {
+    dates.push(new Date(t));
+  }
+  return dates;
+}
+
+function sortDailySalesDescending(a, b) {
+  const dateDiff = new Date(b.saleDate).getTime() - new Date(a.saleDate).getTime();
+  if (dateDiff !== 0) return dateDiff;
+  return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+}
+
+function withMissingDailySaleZeros(rows, salesUsers, year, month, makeZeroRow) {
+  const existing = new Set(
+    rows.map((row) => `${String(row.salesUserId)}:${dateKey(row.saleDate)}`)
+  );
+  const zeroRows = [];
+
+  for (const user of salesUsers) {
+    const userId = String(user._id);
+    for (const saleDate of zeroFillDateRange(year, month)) {
+      const key = `${userId}:${dateKey(saleDate)}`;
+      if (!existing.has(key)) {
+        zeroRows.push(makeZeroRow(user, saleDate));
+      }
+    }
+  }
+
+  return [...rows, ...zeroRows].sort(sortDailySalesDescending);
+}
+
+function withMissingDailySaleZerosForDates(rows, salesUsers, dates, makeZeroRow) {
+  const tomorrow = new Date(todayUtcMidnight().getTime() + MS_PER_DAY);
+  const eligibleDates = dates.filter((date) => {
+    const saleDate = date instanceof Date ? date : new Date(date);
+    return (
+      !Number.isNaN(saleDate.getTime()) &&
+      saleDate >= DAILY_SALE_ZERO_FILL_START &&
+      saleDate < tomorrow
+    );
+  });
+  const existing = new Set(
+    rows.map((row) => `${String(row.salesUserId)}:${dateKey(row.saleDate)}`)
+  );
+  const zeroRows = [];
+
+  for (const user of salesUsers) {
+    const userId = String(user._id);
+    for (const saleDate of eligibleDates) {
+      const key = `${userId}:${dateKey(saleDate)}`;
+      if (!existing.has(key)) {
+        zeroRows.push(makeZeroRow(user, saleDate));
+      }
+    }
+  }
+
+  return [...rows, ...zeroRows].sort(sortDailySalesDescending);
 }
 
 /**
@@ -146,5 +229,7 @@ module.exports = {
   sumDefinedTargets,
   salesUserMonthSummary,
   hasDailySaleOnDate,
+  withMissingDailySaleZeros,
+  withMissingDailySaleZerosForDates,
   DUPLICATE_MANAGER_DAILY_LOG_MESSAGE,
 };

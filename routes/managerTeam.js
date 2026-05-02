@@ -12,8 +12,28 @@ const {
   monthUtcRange,
   parseSaleDate,
   hasDailySaleOnDate,
+  withMissingDailySaleZeros,
   DUPLICATE_MANAGER_DAILY_LOG_MESSAGE,
 } = require('../utils/salesHelpers');
+
+function dailySaleVirtualId(salesUserId, saleDate) {
+  return `virtual-zero:${salesUserId}:${saleDate.toISOString().slice(0, 10)}`;
+}
+
+function makeZeroSaleRow(user, saleDate, extra = {}) {
+  return {
+    _id: dailySaleVirtualId(user._id, saleDate),
+    salesUserId: user._id,
+    saleDate,
+    amount: 0,
+    note: 'No sales log entered',
+    entryKind: 'system-zero',
+    isSystemGenerated: true,
+    createdAt: null,
+    updatedAt: null,
+    ...extra,
+  };
+}
 
 /** Daily rows + month summary for one rep (manager must own this sales user). */
 async function repDailySalesPayload(managerId, salesUserId, year, month) {
@@ -48,6 +68,10 @@ async function repDailySalesPayload(managerId, salesUserId, year, month) {
     monthlyTargetAmount != null
       ? Math.max(0, monthlyTargetAmount - monthTotal)
       : null;
+  const dailySales = withMissingDailySaleZeros(rows, [rep], year, month, (user, saleDate) =>
+    makeZeroSaleRow(user, saleDate)
+  );
+
   return {
     rep: {
       userId: rep._id,
@@ -65,7 +89,7 @@ async function repDailySalesPayload(managerId, salesUserId, year, month) {
     monthlyTargetAmount,
     hasTarget: Boolean(targetDoc),
     remaining,
-    dailySales: rows,
+    dailySales,
   };
 }
 
@@ -105,7 +129,14 @@ router.get('/my-daily', requireManager, async (req, res) => {
     })
       .sort({ saleDate: -1, createdAt: -1 })
       .lean();
-    return res.json({ dailySales: rows });
+    const dailySales = withMissingDailySaleZeros(
+      rows,
+      [req.manager],
+      ym.year,
+      ym.month,
+      (user, saleDate) => makeZeroSaleRow(user, saleDate)
+    );
+    return res.json({ dailySales });
   } catch {
     return res.status(500).json({ error: 'Failed to list manager daily logs' });
   }
@@ -419,7 +450,18 @@ router.get('/team-daily-sales', requireManager, async (req, res) => {
     })
       .sort({ saleDate: -1, createdAt: -1 })
       .lean();
-    const dailySales = rows.map((r) => {
+    const rowsWithZeros = withMissingDailySaleZeros(
+      rows,
+      salesUsers,
+      ym.year,
+      ym.month,
+      (user, saleDate) =>
+        makeZeroSaleRow(user, saleDate, {
+          repName: user.name,
+          repPhone: user.phone,
+        })
+    );
+    const dailySales = rowsWithZeros.map((r) => {
       const m = meta[String(r.salesUserId)];
       return {
         ...r,

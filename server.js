@@ -24,9 +24,11 @@ const salesRoutes = require('./routes/sales');
 const managerTeamRoutes = require('./routes/managerTeam');
 const tripRoutes = require('./routes/trips');
 const serviceRoutes = require('./routes/service');
+const financeRoutes = require('./routes/finance');
 const User = require('./models/users');
 
 app.use('/api/admin', adminRoutes);
+app.use('/api/finance', financeRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/manager', managerTeamRoutes);

@@ -2,7 +2,10 @@ const dns = require('dns');
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const http = require('http');
+const { Server } = require('socket.io');
 const app = express();
+const server = http.createServer(app);
 
 require('dotenv').config();
 
@@ -25,7 +28,9 @@ const managerTeamRoutes = require('./routes/managerTeam');
 const tripRoutes = require('./routes/trips');
 const serviceRoutes = require('./routes/service');
 const financeRoutes = require('./routes/finance');
+const chatRoutes = require('./routes/chat');
 const User = require('./models/users');
+const { initializeChatSocket } = require('./sockets/chatSocket');
 
 app.use('/api/admin', adminRoutes);
 app.use('/api/finance', financeRoutes);
@@ -34,6 +39,16 @@ app.use('/api/sales', salesRoutes);
 app.use('/api/manager', managerTeamRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/service', serviceRoutes);
+app.use('/api/chat', chatRoutes);
+
+const io = new Server(server, {
+  cors: {
+    origin: true,
+    credentials: true,
+  },
+});
+app.set('io', io);
+initializeChatSocket(io);
 
 async function connectDB() {
     try {
@@ -56,6 +71,6 @@ async function connectDB() {
 
 
 const PORT = process.env.PORT;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log(`Server is running on port http://localhost:${PORT}`);
 });

@@ -38,6 +38,11 @@ const serviceLogSchema = new mongoose.Schema(
       required: true,
       trim: true,
     },
+    /** Optional monetary amount; only service-head users may set (enforced in routes). */
+    amount: {
+      type: Number,
+      min: 0,
+    },
   },
   { timestamps: true }
 );

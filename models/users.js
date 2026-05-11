@@ -67,6 +67,11 @@ const userSchema = new mongoose.Schema(
       enum: ['pending', 'approved', 'rejected'],
       default: 'pending',
     },
+    /** Service team lead; only meaningful for designation === "service". Set by admin only. */
+    serviceHead: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );
@@ -81,6 +86,9 @@ userSchema.pre('validate', async function applyCompanyRules() {
     }
   } else {
     this.company = undefined;
+  }
+  if (this.designation !== 'service') {
+    this.serviceHead = false;
   }
 });
 

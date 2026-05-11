@@ -15,18 +15,18 @@ const serviceLogSchema = new mongoose.Schema(
     },
     customer: {
       type: String,
-      required: true,
       trim: true,
+      default: '',
     },
     service: {
       type: String,
-      required: true,
       trim: true,
+      default: '',
     },
     km: {
       type: Number,
-      required: true,
       min: 0,
+      default: 0,
     },
     spares: {
       type: String,
@@ -35,10 +35,16 @@ const serviceLogSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      required: true,
       trim: true,
+      default: '',
     },
-    /** Optional monetary amount; only service-head users may set (enforced in routes). */
+    /** Full visit vs service-head-only amount row (routes enforce who can create which). */
+    entryKind: {
+      type: String,
+      enum: ['full', 'amount_only'],
+      default: 'full',
+    },
+    /** Optional monetary amount; service heads may attach to full logs or amount-only rows. */
     amount: {
       type: Number,
       min: 0,

@@ -98,6 +98,9 @@ router.get('/', requireService, async (req, res) => {
   const ym = parseYearMonth(req.query);
   try {
     const filter = { serviceUserId: req.serviceUser._id };
+    if (!isServiceHead(req)) {
+      filter.entryKind = { $ne: 'amount_only' };
+    }
     if (ym) {
       const { start, end } = monthUtcRange(ym.year, ym.month);
       filter.date = { $gte: start, $lt: end };
@@ -115,12 +118,51 @@ router.get('/', requireService, async (req, res) => {
 });
 
 router.post('/', requireService, async (req, res) => {
-  const { date, customer, service, km, spares, status, amount } = req.body || {};
+  const { date, customer, service, km, spares, status, amount, amountOnly } = req.body || {};
+  const amountOnlyFlag = Boolean(amountOnly);
 
   if (!isServiceHead(req) && amountProvidedInBody(amount)) {
     return res.status(403).json({
       error: 'Only service head users can set amount on a service log',
     });
+  }
+  if (!isServiceHead(req) && amountOnlyFlag) {
+    return res.status(403).json({
+      error: 'Only service heads can create amount-only log entries',
+    });
+  }
+
+  if (isServiceHead(req) && amountOnlyFlag) {
+    const parsedAmount = parseOptionalAmount(amount);
+    if (parsedAmount === undefined) {
+      return res.status(400).json({ error: 'amount is required for an amount-only entry' });
+    }
+    if (parsedAmount === null) {
+      return res.status(400).json({ error: 'amount must be a non-negative number' });
+    }
+    let parsedDate = parseDate(date);
+    if (!parsedDate) {
+      const now = new Date();
+      parsedDate = new Date(
+        Date.UTC(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, 0, 0)
+      );
+    }
+    try {
+      const doc = await ServiceLog.create({
+        serviceUserId: req.serviceUser._id,
+        date: parsedDate,
+        customer: '',
+        service: '',
+        km: 0,
+        spares: '',
+        status: 'amount-only',
+        amount: parsedAmount,
+        entryKind: 'amount_only',
+      });
+      return res.status(201).json({ serviceLog: logResponseForViewer(doc, req) });
+    } catch {
+      return res.status(500).json({ error: 'Failed to create service log' });
+    }
   }
 
   const parsedDate = parseDate(date);
@@ -165,6 +207,7 @@ router.post('/', requireService, async (req, res) => {
       km: parsedKm,
       spares: normalizeOptionalText(spares),
       status: statusText,
+      entryKind: 'full',
     };
     if (isServiceHead(req) && parsedAmount !== undefined) {
       payload.amount = parsedAmount;
@@ -185,6 +228,9 @@ router.get('/:id', requireService, async (req, res) => {
     if (!doc || String(doc.serviceUserId) !== String(req.serviceUser._id)) {
       return res.status(404).json({ error: 'Service log not found' });
     }
+    if (!isServiceHead(req) && doc.entryKind === 'amount_only') {
+      return res.status(404).json({ error: 'Service log not found' });
+    }
     return res.json({ serviceLog: logResponseForViewer(doc, req) });
   } catch {
     return res.status(500).json({ error: 'Failed to load service log' });
@@ -200,8 +246,39 @@ router.put('/:id', requireService, async (req, res) => {
     if (!doc || String(doc.serviceUserId) !== String(req.serviceUser._id)) {
       return res.status(404).json({ error: 'Service log not found' });
     }
+    if (!isServiceHead(req) && doc.entryKind === 'amount_only') {
+      return res.status(404).json({ error: 'Service log not found' });
+    }
 
     const { date, customer, service, km, spares, status, amount } = req.body || {};
+
+    if (doc.entryKind === 'amount_only') {
+      if (!isServiceHead(req)) {
+        return res.status(403).json({
+          error: 'Only service heads can update amount-only service logs',
+        });
+      }
+      if (date !== undefined) {
+        const parsedDate = parseDate(date);
+        if (!parsedDate) return res.status(400).json({ error: 'Invalid date' });
+        doc.date = parsedDate;
+      }
+      if (amount !== undefined) {
+        if (amount === null || amount === '') {
+          return res.status(400).json({
+            error: 'amount cannot be cleared on amount-only entries',
+          });
+        }
+        const parsedAmount = parseOptionalAmount(amount);
+        if (parsedAmount === null || parsedAmount === undefined) {
+          return res.status(400).json({ error: 'amount must be a non-negative number' });
+        }
+        doc.amount = parsedAmount;
+      }
+      await doc.save();
+      const fresh = await ServiceLog.findById(id);
+      return res.json({ serviceLog: logResponseForViewer(fresh, req) });
+    }
 
     if (amount !== undefined) {
       if (!isServiceHead(req)) {

@@ -17,6 +17,23 @@ function parseKm(value) {
   return n;
 }
 
+/** Undefined = omit; null = invalid; number = parsed amount. */
+function parseOptionalAmount(value) {
+  if (value == null) return undefined;
+  if (typeof value === 'string' && value.trim() === '') return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n;
+}
+
+function isServiceHead(req) {
+  return req.serviceUser?.serviceHead === true;
+}
+
+function amountProvidedInBody(value) {
+  return value !== undefined && value !== null && String(value).trim() !== '';
+}
+
 function normalizeRequiredText(value) {
   if (value == null) return null;
   const v = String(value).trim();
@@ -30,6 +47,22 @@ function normalizeOptionalText(value, maxLen = 2000) {
 
 function logResponse(doc) {
   const o = doc.toObject ? doc.toObject() : { ...doc };
+  return o;
+}
+
+/** Non–service-head users never receive `amount` in JSON (defense in depth). */
+function logResponseForViewer(doc, req) {
+  const o = logResponse(doc);
+  if (!isServiceHead(req)) {
+    delete o.amount;
+  }
+  return o;
+}
+
+function stripAmountIfNeeded(row, req) {
+  if (isServiceHead(req)) return row;
+  const o = { ...row };
+  delete o.amount;
   return o;
 }
 
@@ -73,14 +106,23 @@ router.get('/', requireService, async (req, res) => {
       .sort({ date: -1, createdAt: -1 })
       .limit(limit)
       .lean();
-    return res.json({ serviceLogs: logs });
+    return res.json({
+      serviceLogs: logs.map((row) => stripAmountIfNeeded(row, req)),
+    });
   } catch {
     return res.status(500).json({ error: 'Failed to list service logs' });
   }
 });
 
 router.post('/', requireService, async (req, res) => {
-  const { date, customer, service, km, spares, status } = req.body || {};
+  const { date, customer, service, km, spares, status, amount } = req.body || {};
+
+  if (!isServiceHead(req) && amountProvidedInBody(amount)) {
+    return res.status(403).json({
+      error: 'Only service head users can set amount on a service log',
+    });
+  }
+
   const parsedDate = parseDate(date);
   if (!parsedDate) {
     return res.status(400).json({ error: 'date is required (YYYY-MM-DD or ISO)' });
@@ -106,8 +148,16 @@ router.post('/', requireService, async (req, res) => {
     return res.status(400).json({ error: 'status is required' });
   }
 
+  let parsedAmount;
+  if (isServiceHead(req)) {
+    parsedAmount = parseOptionalAmount(amount);
+    if (parsedAmount === null) {
+      return res.status(400).json({ error: 'amount must be a non-negative number' });
+    }
+  }
+
   try {
-    const doc = await ServiceLog.create({
+    const payload = {
       serviceUserId: req.serviceUser._id,
       date: parsedDate,
       customer: customerText,
@@ -115,8 +165,13 @@ router.post('/', requireService, async (req, res) => {
       km: parsedKm,
       spares: normalizeOptionalText(spares),
       status: statusText,
-    });
-    return res.status(201).json({ serviceLog: logResponse(doc) });
+    };
+    if (isServiceHead(req) && parsedAmount !== undefined) {
+      payload.amount = parsedAmount;
+    }
+
+    const doc = await ServiceLog.create(payload);
+    return res.status(201).json({ serviceLog: logResponseForViewer(doc, req) });
   } catch {
     return res.status(500).json({ error: 'Failed to create service log' });
   }
@@ -130,7 +185,7 @@ router.get('/:id', requireService, async (req, res) => {
     if (!doc || String(doc.serviceUserId) !== String(req.serviceUser._id)) {
       return res.status(404).json({ error: 'Service log not found' });
     }
-    return res.json({ serviceLog: logResponse(doc) });
+    return res.json({ serviceLog: logResponseForViewer(doc, req) });
   } catch {
     return res.status(500).json({ error: 'Failed to load service log' });
   }
@@ -146,7 +201,30 @@ router.put('/:id', requireService, async (req, res) => {
       return res.status(404).json({ error: 'Service log not found' });
     }
 
-    const { date, customer, service, km, spares, status } = req.body || {};
+    const { date, customer, service, km, spares, status, amount } = req.body || {};
+
+    if (amount !== undefined) {
+      if (!isServiceHead(req)) {
+        return res.status(403).json({
+          error: 'Only service head users can set amount on a service log',
+        });
+      }
+      if (amount === null || amount === '') {
+        await ServiceLog.updateOne({ _id: doc._id }, { $unset: { amount: 1 } });
+        doc.amount = undefined;
+      } else {
+        const parsedAmount = parseOptionalAmount(amount);
+        if (parsedAmount === null) {
+          return res.status(400).json({ error: 'amount must be a non-negative number' });
+        }
+        if (parsedAmount === undefined) {
+          await ServiceLog.updateOne({ _id: doc._id }, { $unset: { amount: 1 } });
+          doc.amount = undefined;
+        } else {
+          doc.amount = parsedAmount;
+        }
+      }
+    }
 
     if (date !== undefined) {
       const parsedDate = parseDate(date);
@@ -180,7 +258,8 @@ router.put('/:id', requireService, async (req, res) => {
     }
 
     await doc.save();
-    return res.json({ serviceLog: logResponse(doc) });
+    const fresh = await ServiceLog.findById(id);
+    return res.json({ serviceLog: logResponseForViewer(fresh, req) });
   } catch {
     return res.status(500).json({ error: 'Failed to update service log' });
   }

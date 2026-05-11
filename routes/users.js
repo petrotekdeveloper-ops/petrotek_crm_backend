@@ -27,6 +27,9 @@ function signUserToken(user) {
 function userResponse(userDoc) {
   const o = userDoc.toObject ? userDoc.toObject() : userDoc;
   delete o.password;
+  if (o.designation === 'service' && o.serviceHead == null) {
+    o.serviceHead = false;
+  }
   return o;
 }
 

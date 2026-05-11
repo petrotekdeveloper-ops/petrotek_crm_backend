@@ -22,6 +22,9 @@ const UAE_PHONE_RE = /^\+971\d{1,9}$/;
 function userResponse(doc) {
   const o = doc.toObject ? doc.toObject() : { ...doc };
   delete o.password;
+  if (o.designation === 'service' && o.serviceHead == null) {
+    o.serviceHead = false;
+  }
   return o;
 }
 
@@ -153,6 +156,7 @@ router.post('/users', requireAdmin, async (req, res) => {
     managerId,
     vehicleNumber,
     company,
+    serviceHead,
   } =
     req.body || {};
 
@@ -257,6 +261,9 @@ router.post('/users', requireAdmin, async (req, res) => {
     if (designation === 'driver') {
       doc.vehicleNumber = String(vehicleNumber).trim();
     }
+    if (designation === 'service') {
+      doc.serviceHead = Boolean(serviceHead);
+    }
 
     const user = await User.create(doc);
     return res.status(201).json({ user: userResponse(user) });
@@ -302,6 +309,7 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     vehicleNumber,
     approvalStatus,
     company,
+    serviceHead,
   } = req.body || {};
   /** Quick approve/reject from admin UI sends only this field — skip role profile rules (manager, vehicle, etc.). */
   const rawBody = req.body || {};
@@ -396,6 +404,17 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
   const currentUser = await User.findById(id).select('designation vehicleNumber managerId company');
   if (!currentUser) return res.status(404).json({ error: 'User not found' });
 
+  if (serviceHead !== undefined) {
+    const desired = Boolean(serviceHead);
+    const designationForHead = updates.designation ?? currentUser.designation;
+    if (desired && designationForHead !== 'service') {
+      return res.status(400).json({
+        error: 'serviceHead can only be enabled for users with designation service',
+      });
+    }
+    updates.serviceHead = desired;
+  }
+
   if (!onlyApprovalStatus) {
     const designationToValidate = updates.designation ?? currentUser.designation;
     const resolvedVehicleNumber =
@@ -428,6 +447,9 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
       }
     } else {
       updates.managerId = null;
+    }
+    if (designationToValidate !== 'service') {
+      updates.serviceHead = false;
     }
   }
 
@@ -559,10 +581,15 @@ router.get('/sales-user-targets', requireAdmin, async (req, res) => {
 router.get('/service-users', requireAdmin, async (req, res) => {
   try {
     const users = await User.find({ designation: 'service' })
-      .select('_id name phone approvalStatus')
+      .select('_id name phone approvalStatus serviceHead')
       .sort({ name: 1 })
       .lean();
-    return res.json({ serviceUsers: users });
+    return res.json({
+      serviceUsers: users.map((u) => ({
+        ...u,
+        serviceHead: u.serviceHead === true,
+      })),
+    });
   } catch {
     return res.status(500).json({ error: 'Failed to list service users' });
   }
@@ -593,6 +620,7 @@ router.get('/service-logs/summary', requireAdmin, async (req, res) => {
             _id: null,
             totalLogs: { $sum: 1 },
             totalKm: { $sum: '$km' },
+            totalAmount: { $sum: { $ifNull: ['$amount', 0] } },
             uniqueCustomers: { $addToSet: '$customer' },
           },
         },
@@ -601,6 +629,7 @@ router.get('/service-logs/summary', requireAdmin, async (req, res) => {
             _id: 0,
             totalLogs: 1,
             totalKm: 1,
+            totalAmount: 1,
             uniqueCustomerCount: { $size: '$uniqueCustomers' },
           },
         },
@@ -613,13 +642,14 @@ router.get('/service-logs/summary', requireAdmin, async (req, res) => {
       ]),
     ]);
 
-    const t = totals[0] || { totalLogs: 0, totalKm: 0, uniqueCustomerCount: 0 };
+    const t = totals[0] || { totalLogs: 0, totalKm: 0, totalAmount: 0, uniqueCustomerCount: 0 };
     return res.json({
       summary: {
         year: ym.year,
         month: ym.month,
         totalLogs: t.totalLogs || 0,
         totalKm: Number(t.totalKm || 0),
+        totalAmount: Number(t.totalAmount || 0),
         uniqueCustomers: t.uniqueCustomerCount || 0,
         byStatus: statusRows,
       },

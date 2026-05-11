@@ -3,6 +3,7 @@ const mongoose = require('mongoose');
 const User = require('../models/users');
 const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const DailySale = require('../models/dailySale');
+const ServiceLog = require('../models/serviceLog');
 const { requireManager } = require('../middleware/managerAuth');
 const {
   sumDailySalesForUserInMonth,
@@ -476,6 +477,103 @@ router.get('/team-daily-sales', requireManager, async (req, res) => {
     });
   } catch {
     return res.status(500).json({ error: 'Failed to load team daily sales' });
+  }
+});
+
+/**
+ * Service logs with an amount, entered by approved service-head users (read-only for managers).
+ * Optional query: serviceUserId (must be a service head).
+ */
+router.get('/service-head-amount-logs', requireManager, async (req, res) => {
+  const ym = parseYearMonthQuery(req.query);
+  if (!ym) {
+    return res.status(400).json({
+      error: 'Query params year and month (1-12) are required',
+    });
+  }
+  const { serviceUserId } = req.query;
+  if (serviceUserId && !mongoose.isValidObjectId(serviceUserId)) {
+    return res.status(400).json({ error: 'Invalid serviceUserId' });
+  }
+
+  const { start, end } = monthUtcRange(ym.year, ym.month);
+
+  const baseHeadFilter = {
+    designation: 'service',
+    serviceHead: true,
+    approvalStatus: 'approved',
+  };
+
+  try {
+    const allHeads = await User.find(baseHeadFilter).select('_id name phone').sort({ name: 1 }).lean();
+
+    let headIdsForQuery;
+    if (serviceUserId) {
+      const one = await User.findOne({ _id: serviceUserId, ...baseHeadFilter })
+        .select('_id')
+        .lean();
+      if (!one) {
+        return res.status(400).json({
+          error: 'User is not an approved service head',
+        });
+      }
+      headIdsForQuery = [one._id];
+    } else {
+      headIdsForQuery = allHeads.map((h) => h._id);
+    }
+
+    if (headIdsForQuery.length === 0) {
+      return res.json({
+        year: ym.year,
+        month: ym.month,
+        summary: { totalAmount: 0, logCount: 0 },
+        serviceHeadUsers: [],
+        logs: [],
+      });
+    }
+
+    const logs = await ServiceLog.find({
+      serviceUserId: { $in: headIdsForQuery },
+      date: { $gte: start, $lt: end },
+      amount: { $gte: 0, $exists: true },
+    })
+      .sort({ date: -1, createdAt: -1 })
+      .limit(500)
+      .lean();
+
+    const headById = new Map(allHeads.map((h) => [String(h._id), h]));
+    const rows = logs.map((row) => {
+      const u = headById.get(String(row.serviceUserId));
+      return {
+        _id: row._id,
+        date: row.date,
+        amount: row.amount,
+        serviceUserId: row.serviceUserId,
+        serviceUserName: u?.name ?? '—',
+        serviceUserPhone: u?.phone ?? '—',
+        createdAt: row.createdAt,
+      };
+    });
+
+    const totalAmount = rows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+
+    return res.json({
+      year: ym.year,
+      month: ym.month,
+      summary: {
+        totalAmount,
+        logCount: rows.length,
+      },
+      serviceHeadUsers: allHeads.map((h) => ({
+        _id: h._id,
+        name: h.name,
+        phone: h.phone,
+      })),
+      logs: rows,
+    });
+  } catch (err) {
+    console.error('[manager] service-head-amount-logs', err?.message || err);
+    return res.status(500).json({ error: 'Failed to load service head amount logs' });
   }
 });
 

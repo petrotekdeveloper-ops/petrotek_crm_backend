@@ -4,6 +4,7 @@ const User = require('../models/users');
 const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const DailySale = require('../models/dailySale');
 const ServiceLog = require('../models/serviceLog');
+const MonthlyServiceHeadTarget = require('../models/monthlyServiceHeadTarget');
 const { requireManager } = require('../middleware/managerAuth');
 const {
   sumDailySalesForUserInMonth,
@@ -112,6 +113,27 @@ function parseYearMonthQuery(query) {
     return null;
   }
   return { year: y, month: m };
+}
+
+/** Sum logged amounts (same rules as amount-log list) per service user id → Map<string, number>. */
+async function aggregateServiceHeadAchievedByUser(headIds, year, month) {
+  if (!Array.isArray(headIds) || headIds.length === 0) return new Map();
+  const { start, end } = monthUtcRange(year, month);
+  const oids = headIds
+    .filter((id) => id != null && mongoose.isValidObjectId(id))
+    .map((id) => new mongoose.Types.ObjectId(String(id)));
+  if (oids.length === 0) return new Map();
+  const rows = await ServiceLog.aggregate([
+    {
+      $match: {
+        serviceUserId: { $in: oids },
+        date: { $gte: start, $lt: end },
+        amount: { $exists: true, $gte: 0 },
+      },
+    },
+    { $group: { _id: '$serviceUserId', total: { $sum: '$amount' } } },
+  ]);
+  return new Map(rows.map((r) => [String(r._id), Number(r.total) || 0]));
 }
 
 /** Manager's own daily logs (same shape as sales, but owner is req.manager). */
@@ -528,18 +550,58 @@ router.get('/service-head-amount-logs', requireManager, async (req, res) => {
         month: ym.month,
         summary: { totalAmount: 0, logCount: 0 },
         serviceHeadUsers: [],
+        serviceHeadSummaries: [],
         logs: [],
       });
     }
 
-    const logs = await ServiceLog.find({
-      serviceUserId: { $in: headIdsForQuery },
-      date: { $gte: start, $lt: end },
-      amount: { $gte: 0, $exists: true },
-    })
-      .sort({ date: -1, createdAt: -1 })
-      .limit(500)
-      .lean();
+    const [logs, achievedMap, targetDocs] = await Promise.all([
+      ServiceLog.find({
+        serviceUserId: { $in: headIdsForQuery },
+        date: { $gte: start, $lt: end },
+        amount: { $gte: 0, $exists: true },
+      })
+        .sort({ date: -1, createdAt: -1 })
+        .limit(500)
+        .lean(),
+      aggregateServiceHeadAchievedByUser(
+        allHeads.map((h) => h._id),
+        ym.year,
+        ym.month
+      ),
+      MonthlyServiceHeadTarget.find({
+        serviceHeadUserId: { $in: allHeads.map((h) => h._id) },
+        year: ym.year,
+        month: ym.month,
+      }).lean(),
+    ]);
+
+    const targetByHead = new Map(
+      targetDocs.map((d) => [String(d.serviceHeadUserId), d])
+    );
+    const serviceHeadSummaries = allHeads.map((h) => {
+      const id = String(h._id);
+      const achievedAmount = achievedMap.get(id) ?? 0;
+      const td = targetByHead.get(id);
+      const targetAmount = td ? td.targetAmount : null;
+      const hasTarget = Boolean(td);
+      const remaining =
+        targetAmount != null ? Math.max(0, targetAmount - achievedAmount) : null;
+      const progressPct =
+        targetAmount != null && targetAmount > 0
+          ? Math.min(100, Math.round((achievedAmount / targetAmount) * 100))
+          : null;
+      return {
+        serviceHeadUserId: h._id,
+        name: h.name,
+        phone: h.phone,
+        achievedAmount,
+        targetAmount,
+        hasTarget,
+        remaining,
+        progressPct,
+      };
+    });
 
     const headById = new Map(allHeads.map((h) => [String(h._id), h]));
     const rows = logs.map((row) => {
@@ -569,11 +631,103 @@ router.get('/service-head-amount-logs', requireManager, async (req, res) => {
         name: h.name,
         phone: h.phone,
       })),
+      serviceHeadSummaries,
       logs: rows,
     });
   } catch (err) {
     console.error('[manager] service-head-amount-logs', err?.message || err);
     return res.status(500).json({ error: 'Failed to load service head amount logs' });
+  }
+});
+
+/** Any approved manager may set a monthly amount target for any approved service head. */
+router.put('/service-head-target', requireManager, async (req, res) => {
+  const ym = parseYearMonthBody(req.body);
+  const { serviceHeadUserId, targetAmount } = req.body || {};
+  if (!ym) {
+    return res.status(400).json({
+      error: 'year and month (1-12) are required',
+    });
+  }
+  if (!serviceHeadUserId || !mongoose.isValidObjectId(serviceHeadUserId)) {
+    return res.status(400).json({ error: 'Valid serviceHeadUserId is required' });
+  }
+  const amt = Number(targetAmount);
+  if (!Number.isFinite(amt) || amt < 0) {
+    return res.status(400).json({
+      error: 'targetAmount must be a non-negative number',
+    });
+  }
+
+  try {
+    const head = await User.findOne({
+      _id: serviceHeadUserId,
+      designation: 'service',
+      serviceHead: true,
+      approvalStatus: 'approved',
+    }).select('_id');
+    if (!head) {
+      return res.status(404).json({ error: 'Service head user not found' });
+    }
+
+    const doc = await MonthlyServiceHeadTarget.findOneAndUpdate(
+      { serviceHeadUserId: head._id, year: ym.year, month: ym.month },
+      {
+        $set: {
+          serviceHeadUserId: head._id,
+          year: ym.year,
+          month: ym.month,
+          targetAmount: amt,
+          setByManagerId: req.manager._id,
+        },
+      },
+      { upsert: true, returnDocument: 'after', runValidators: true }
+    );
+    return res.json({
+      serviceHeadTarget: {
+        serviceHeadUserId: head._id,
+        year: ym.year,
+        month: ym.month,
+        targetAmount: doc.targetAmount,
+      },
+    });
+  } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ error: 'Duplicate service head target' });
+    }
+    return res.status(500).json({ error: 'Failed to save service head target' });
+  }
+});
+
+router.delete('/service-head-target', requireManager, async (req, res) => {
+  const ym = parseYearMonthQuery(req.query);
+  const { serviceHeadUserId } = req.query || {};
+  if (!ym) {
+    return res.status(400).json({
+      error: 'Query params year and month (1-12) are required',
+    });
+  }
+  if (!serviceHeadUserId || !mongoose.isValidObjectId(serviceHeadUserId)) {
+    return res.status(400).json({ error: 'Valid serviceHeadUserId is required' });
+  }
+  try {
+    const head = await User.findOne({
+      _id: serviceHeadUserId,
+      designation: 'service',
+      serviceHead: true,
+      approvalStatus: 'approved',
+    }).select('_id');
+    if (!head) {
+      return res.status(404).json({ error: 'Service head user not found' });
+    }
+    await MonthlyServiceHeadTarget.deleteOne({
+      serviceHeadUserId: head._id,
+      year: ym.year,
+      month: ym.month,
+    });
+    return res.json({ message: 'Service head target cleared' });
+  } catch {
+    return res.status(500).json({ error: 'Failed to clear service head target' });
   }
 });
 

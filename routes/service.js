@@ -1,6 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const ServiceLog = require('../models/serviceLog');
+const MonthlyServiceHeadTarget = require('../models/monthlyServiceHeadTarget');
 const { requireService } = require('../middleware/serviceAuth');
 
 const router = express.Router();
@@ -109,9 +110,53 @@ router.get('/', requireService, async (req, res) => {
       .sort({ date: -1, createdAt: -1 })
       .limit(limit)
       .lean();
-    return res.json({
+
+    let monthAmountSummary = null;
+    if (ym && isServiceHead(req)) {
+      const { start, end } = monthUtcRange(ym.year, ym.month);
+      const achievedRows = await ServiceLog.aggregate([
+        {
+          $match: {
+            serviceUserId: new mongoose.Types.ObjectId(req.serviceUser._id),
+            date: { $gte: start, $lt: end },
+            amount: { $exists: true, $gte: 0 },
+          },
+        },
+        { $group: { _id: null, total: { $sum: '$amount' } } },
+      ]);
+      const achievedAmount =
+        achievedRows.length > 0 ? Number(achievedRows[0].total) || 0 : 0;
+      const targetDoc = await MonthlyServiceHeadTarget.findOne({
+        serviceHeadUserId: req.serviceUser._id,
+        year: ym.year,
+        month: ym.month,
+      }).lean();
+      const targetAmount = targetDoc ? targetDoc.targetAmount : null;
+      const hasTarget = Boolean(targetDoc);
+      const remaining =
+        targetAmount != null ? Math.max(0, targetAmount - achievedAmount) : null;
+      const progressPct =
+        targetAmount != null && targetAmount > 0
+          ? Math.min(100, Math.round((achievedAmount / targetAmount) * 100))
+          : null;
+      monthAmountSummary = {
+        year: ym.year,
+        month: ym.month,
+        achievedAmount,
+        targetAmount,
+        hasTarget,
+        remaining,
+        progressPct,
+      };
+    }
+
+    const payload = {
       serviceLogs: logs.map((row) => stripAmountIfNeeded(row, req)),
-    });
+    };
+    if (monthAmountSummary) {
+      payload.monthAmountSummary = monthAmountSummary;
+    }
+    return res.json(payload);
   } catch {
     return res.status(500).json({ error: 'Failed to list service logs' });
   }

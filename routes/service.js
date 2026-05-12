@@ -71,11 +71,13 @@ function badId(res) {
   return res.status(400).json({ error: 'Invalid log id' });
 }
 
-function parsePaging(query) {
+function parsePaging(query, { monthScoped = false } = {}) {
   const limitRaw = Number(query?.limit);
+  const maxCap = monthScoped ? 500 : 200;
+  const fallback = monthScoped ? 500 : 100;
   const limit = Number.isFinite(limitRaw)
-    ? Math.max(1, Math.min(200, Math.trunc(limitRaw)))
-    : 100;
+    ? Math.max(1, Math.min(maxCap, Math.trunc(limitRaw)))
+    : fallback;
   return { limit };
 }
 
@@ -95,8 +97,8 @@ function monthUtcRange(year, month) {
 }
 
 router.get('/', requireService, async (req, res) => {
-  const { limit } = parsePaging(req.query);
   const ym = parseYearMonth(req.query);
+  const { limit } = parsePaging(req.query, { monthScoped: Boolean(ym) });
   try {
     const filter = { serviceUserId: req.serviceUser._id };
     if (!isServiceHead(req)) {
@@ -131,14 +133,29 @@ router.get('/', requireService, async (req, res) => {
         year: ym.year,
         month: ym.month,
       }).lean();
-      const targetAmount = targetDoc ? targetDoc.targetAmount : null;
+      const targetAmount = targetDoc ? Number(targetDoc.targetAmount) : null;
       const hasTarget = Boolean(targetDoc);
       const remaining =
         targetAmount != null ? Math.max(0, targetAmount - achievedAmount) : null;
+
       const progressPct =
         targetAmount != null && targetAmount > 0
           ? Math.min(100, Math.round((achievedAmount / targetAmount) * 100))
           : null;
+      const gapPctOfTarget =
+        hasTarget && targetAmount != null && targetAmount > 0
+          ? Math.min(100, Math.max(0, Math.round((remaining / targetAmount) * 100)))
+          : null;
+      const achievementOfTargetPct =
+        hasTarget && targetAmount != null && targetAmount > 0
+          ? Math.round((achievedAmount / targetAmount) * 100)
+          : null;
+
+      const exceededTargetBy =
+        hasTarget && targetAmount != null && achievedAmount > targetAmount
+          ? achievedAmount - targetAmount
+          : null;
+
       monthAmountSummary = {
         year: ym.year,
         month: ym.month,
@@ -147,6 +164,9 @@ router.get('/', requireService, async (req, res) => {
         hasTarget,
         remaining,
         progressPct,
+        gapPctOfTarget,
+        achievementOfTargetPct,
+        exceededTargetBy,
       };
     }
 
@@ -380,6 +400,10 @@ router.put('/:id', requireService, async (req, res) => {
     }
 
     await doc.save();
+    /** Non–service-head users never keep `amount` on full visits (strip legacy / stray data). */
+    if (!isServiceHead(req) && doc.entryKind === 'full') {
+      await ServiceLog.updateOne({ _id: doc._id }, { $unset: { amount: 1 } });
+    }
     const fresh = await ServiceLog.findById(id);
     return res.json({ serviceLog: logResponseForViewer(fresh, req) });
   } catch {

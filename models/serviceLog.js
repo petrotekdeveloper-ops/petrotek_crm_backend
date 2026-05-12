@@ -49,6 +49,13 @@ const serviceLogSchema = new mongoose.Schema(
       type: Number,
       min: 0,
     },
+    /** Short context for amount-only entries (service heads). Ignored on full visit logs by routes. */
+    amountNote: {
+      type: String,
+      trim: true,
+      default: '',
+      maxLength: 2000,
+    },
   },
   { timestamps: true }
 );

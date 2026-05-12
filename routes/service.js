@@ -56,6 +56,7 @@ function logResponseForViewer(doc, req) {
   const o = logResponse(doc);
   if (!isServiceHead(req)) {
     delete o.amount;
+    delete o.amountNote;
   }
   return o;
 }
@@ -64,6 +65,7 @@ function stripAmountIfNeeded(row, req) {
   if (isServiceHead(req)) return row;
   const o = { ...row };
   delete o.amount;
+  delete o.amountNote;
   return o;
 }
 
@@ -183,7 +185,8 @@ router.get('/', requireService, async (req, res) => {
 });
 
 router.post('/', requireService, async (req, res) => {
-  const { date, customer, service, km, spares, status, amount, amountOnly } = req.body || {};
+  const { date, customer, service, km, spares, status, amount, amountOnly, amountNote } =
+    req.body || {};
   const amountOnlyFlag = Boolean(amountOnly);
 
   if (!isServiceHead(req) && amountProvidedInBody(amount)) {
@@ -223,6 +226,7 @@ router.post('/', requireService, async (req, res) => {
         status: 'amount-only',
         amount: parsedAmount,
         entryKind: 'amount_only',
+        amountNote: normalizeOptionalText(amountNote),
       });
       return res.status(201).json({ serviceLog: logResponseForViewer(doc, req) });
     } catch {
@@ -315,7 +319,7 @@ router.put('/:id', requireService, async (req, res) => {
       return res.status(404).json({ error: 'Service log not found' });
     }
 
-    const { date, customer, service, km, spares, status, amount } = req.body || {};
+    const { date, customer, service, km, spares, status, amount, amountNote } = req.body || {};
 
     if (doc.entryKind === 'amount_only') {
       if (!isServiceHead(req)) {
@@ -339,6 +343,9 @@ router.put('/:id', requireService, async (req, res) => {
           return res.status(400).json({ error: 'amount must be a non-negative number' });
         }
         doc.amount = parsedAmount;
+      }
+      if (amountNote !== undefined) {
+        doc.amountNote = normalizeOptionalText(amountNote);
       }
       await doc.save();
       const fresh = await ServiceLog.findById(id);

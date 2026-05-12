@@ -610,6 +610,8 @@ router.get('/service-head-amount-logs', requireManager, async (req, res) => {
         _id: row._id,
         date: row.date,
         amount: row.amount,
+        /** Optional note from service heads (esp. amount-only entries). */
+        amountNote: row.amountNote != null ? String(row.amountNote).trim() || null : null,
         serviceUserId: row.serviceUserId,
         serviceUserName: u?.name ?? '—',
         serviceUserPhone: u?.phone ?? '—',

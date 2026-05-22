@@ -37,6 +37,30 @@ function makeZeroSaleRow(user, saleDate, extra = {}) {
   };
 }
 
+/** Approved sales reps plus the manager (same rows on Team daily). */
+function teamDailyParticipants(manager, salesUsers) {
+  const participants = [...salesUsers];
+  if (!participants.some((u) => String(u._id) === String(manager._id))) {
+    participants.push({
+      _id: manager._id,
+      name: manager.name,
+      phone: manager.phone,
+    });
+  }
+  return participants;
+}
+
+/** Only this manager's own logs and their team's — never other managers. */
+function filterDailySalesToTeamParticipants(rows, managerId, allowedIdSet) {
+  const managerIdStr = String(managerId);
+  return rows.filter((r) => {
+    const sid = String(r.salesUserId);
+    if (!allowedIdSet.has(sid)) return false;
+    if (r.entryKind === 'manager' && sid !== managerIdStr) return false;
+    return true;
+  });
+}
+
 /** Daily rows + month summary for one rep (manager must own this sales user). */
 async function repDailySalesPayload(managerId, salesUserId, year, month) {
   const rep = await User.findOne({
@@ -446,7 +470,7 @@ router.get('/rep/:salesUserId/daily-sales', requireManager, async (req, res) => 
   }
 });
 
-/** All daily sale rows for approved sales reps under this manager in the month */
+/** Daily sale rows for approved sales reps under this manager plus the manager's own logs */
 router.get('/team-daily-sales', requireManager, async (req, res) => {
   const ym = parseYearMonthQuery(req.query);
   if (!ym) {
@@ -463,19 +487,26 @@ router.get('/team-daily-sales', requireManager, async (req, res) => {
     })
       .select('_id name phone')
       .lean();
-    const ids = salesUsers.map((u) => u._id);
+    const participants = teamDailyParticipants(req.manager, salesUsers);
+    const ids = participants.map((u) => u._id);
+    const allowedIdSet = new Set(ids.map((id) => String(id)));
     const meta = Object.fromEntries(
-      salesUsers.map((u) => [String(u._id), { name: u.name, phone: u.phone }])
+      participants.map((u) => [String(u._id), { name: u.name, phone: u.phone }])
     );
-    const rows = await DailySale.find({
+    const rawRows = await DailySale.find({
       salesUserId: { $in: ids },
       saleDate: { $gte: start, $lt: end },
     })
       .sort({ saleDate: -1, createdAt: -1 })
       .lean();
+    const rows = filterDailySalesToTeamParticipants(
+      rawRows,
+      req.manager._id,
+      allowedIdSet
+    );
     const rowsWithZeros = withMissingDailySaleZeros(
       rows,
-      salesUsers,
+      participants,
       ym.year,
       ym.month,
       (user, saleDate) =>
@@ -495,6 +526,7 @@ router.get('/team-daily-sales', requireManager, async (req, res) => {
     return res.json({
       year: ym.year,
       month: ym.month,
+      participantIds: [...allowedIdSet],
       dailySales,
     });
   } catch {

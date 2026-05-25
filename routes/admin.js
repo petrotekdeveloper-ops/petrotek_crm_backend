@@ -16,6 +16,8 @@ const { requireAdmin } = require('../middleware/adminAuth');
 const router = express.Router();
 const BCRYPT_ROUNDS = 10;
 const DESIGNATIONS = ['manager', 'sales', 'driver', 'service'];
+/** Users who submit daily sales logs (sales reps and managers). */
+const ADMIN_SALES_LOG_DESIGNATIONS = ['sales', 'manager'];
 const COMPANY_VALUES = ['Petrotek', 'Seltec'];
 const UAE_PHONE_RE = /^\+971\d{1,9}$/;
 
@@ -94,6 +96,18 @@ function resolveAdminSalesLogsFilter(query) {
     };
   }
   return null;
+}
+
+async function adminEligibleUserIds(salesUserId) {
+  const q = {
+    designation: { $in: ADMIN_SALES_LOG_DESIGNATIONS },
+    approvalStatus: 'approved',
+  };
+  if (salesUserId) {
+    q._id = salesUserId;
+  }
+  const users = await User.find(q).select('_id').lean();
+  return users.map((u) => u._id);
 }
 
 router.post('/login', (req, res) => {
@@ -699,13 +713,16 @@ router.get('/service-logs', requireAdmin, async (req, res) => {
 
 router.get('/sales-users', requireAdmin, async (req, res) => {
   try {
-    const users = await User.find({ designation: 'sales' })
-      .select('_id name phone approvalStatus managerId company')
-      .sort({ name: 1 })
+    const users = await User.find({
+      designation: { $in: ADMIN_SALES_LOG_DESIGNATIONS },
+      approvalStatus: 'approved',
+    })
+      .select('_id name phone designation approvalStatus managerId company')
+      .sort({ designation: 1, name: 1 })
       .lean();
     return res.json({ salesUsers: users });
   } catch {
-    return res.status(500).json({ error: 'Failed to list sales users' });
+    return res.status(500).json({ error: 'Failed to list sales and manager users' });
   }
 });
 
@@ -721,10 +738,36 @@ router.get('/sales-logs/summary', requireAdmin, async (req, res) => {
     return res.status(400).json({ error: 'Invalid salesUserId' });
   }
 
-  const match = { ...resolved.filter };
-  if (salesUserId) {
-    match.salesUserId = new mongoose.Types.ObjectId(salesUserId);
+  const oid =
+    salesUserId && mongoose.isValidObjectId(salesUserId)
+      ? new mongoose.Types.ObjectId(salesUserId)
+      : null;
+  let allowedIds;
+  try {
+    allowedIds = await adminEligibleUserIds(oid);
+  } catch {
+    return res.status(500).json({ error: 'Failed to resolve users' });
   }
+  if (salesUserId && allowedIds.length === 0) {
+    return res.status(404).json({ error: 'User not found or not a sales/manager rep' });
+  }
+  if (allowedIds.length === 0) {
+    return res.json({
+      summary: {
+        ...resolved.summaryMeta,
+        totalLogs: 0,
+        totalAmount: 0,
+        avgAmount: 0,
+        activeSalesUsers: 0,
+        topSalesUsers: [],
+      },
+    });
+  }
+
+  const match = {
+    ...resolved.filter,
+    salesUserId: { $in: allowedIds },
+  };
 
   try {
     const [totals, bySalesUser] = await Promise.all([
@@ -775,6 +818,7 @@ router.get('/sales-logs/summary', requireAdmin, async (req, res) => {
             salesUserId: '$_id',
             salesUserName: '$salesUser.name',
             salesUserPhone: '$salesUser.phone',
+            salesUserDesignation: '$salesUser.designation',
             totalAmount: 1,
             logCount: 1,
           },
@@ -823,24 +867,44 @@ router.get('/sales-logs', requireAdmin, async (req, res) => {
     ? Math.max(1, Math.min(maxLimit, Math.trunc(limitRaw)))
     : defaultLimit;
 
-  const filter = { ...resolved.filter };
-  if (salesUserId) filter.salesUserId = salesUserId;
+  const oid =
+    salesUserId && mongoose.isValidObjectId(salesUserId)
+      ? new mongoose.Types.ObjectId(salesUserId)
+      : null;
+
+  let allowedIds;
+  try {
+    allowedIds = await adminEligibleUserIds(oid);
+  } catch {
+    return res.status(500).json({ error: 'Failed to resolve users' });
+  }
+  if (salesUserId && allowedIds.length === 0) {
+    return res.status(404).json({ error: 'User not found or not a sales/manager rep' });
+  }
+
+  const filter = {
+    ...resolved.filter,
+    salesUserId: { $in: allowedIds },
+  };
+  if (salesUserId) {
+    filter.salesUserId = salesUserId;
+  }
+
+  const logUsersFilter = {
+    designation: { $in: ADMIN_SALES_LOG_DESIGNATIONS },
+    approvalStatus: 'approved',
+  };
+  if (salesUserId) {
+    logUsersFilter._id = salesUserId;
+  }
 
   try {
-    const salesUserFilter = {
-      designation: 'sales',
-      approvalStatus: 'approved',
-    };
-    if (salesUserId) {
-      salesUserFilter._id = salesUserId;
-    }
-
     const [logs, salesUsers] = await Promise.all([
       DailySale.find(filter)
         .sort({ saleDate: -1, createdAt: -1 })
-        .populate('salesUserId', 'name phone managerId approvalStatus')
+        .populate('salesUserId', 'name phone managerId approvalStatus designation')
         .lean(),
-      User.find(salesUserFilter).select('_id name phone').lean(),
+      User.find(logUsersFilter).select('_id name phone designation').lean(),
     ]);
 
     const rows = logs.map((row) => {
@@ -857,6 +921,7 @@ router.get('/sales-logs', requireAdmin, async (req, res) => {
         salesUserId: populatedUser?._id ?? row.salesUserId,
         salesUserName: displaySalesUserField(populatedUser?.name),
         salesUserPhone: displaySalesUserField(populatedUser?.phone),
+        salesUserDesignation: displaySalesUserField(populatedUser?.designation),
       };
     });
 

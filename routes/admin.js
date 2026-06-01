@@ -11,6 +11,7 @@ const {
   withMissingDailySaleZeros,
   withMissingDailySaleZerosForDates,
 } = require('../utils/salesHelpers');
+const { aggregateSalesLogsByUser } = require('../utils/salesLogAggregates');
 const { requireAdmin } = require('../middleware/adminAuth');
 
 const router = express.Router();
@@ -792,38 +793,7 @@ router.get('/sales-logs/summary', requireAdmin, async (req, res) => {
           },
         },
       ]),
-      DailySale.aggregate([
-        { $match: match },
-        {
-          $group: {
-            _id: '$salesUserId',
-            totalAmount: { $sum: '$amount' },
-            logCount: { $sum: 1 },
-          },
-        },
-        { $sort: { totalAmount: -1, logCount: -1 } },
-        { $limit: 10 },
-        {
-          $lookup: {
-            from: 'users',
-            localField: '_id',
-            foreignField: '_id',
-            as: 'salesUser',
-          },
-        },
-        { $unwind: { path: '$salesUser', preserveNullAndEmptyArrays: true } },
-        {
-          $project: {
-            _id: 0,
-            salesUserId: '$_id',
-            salesUserName: '$salesUser.name',
-            salesUserPhone: '$salesUser.phone',
-            salesUserDesignation: '$salesUser.designation',
-            totalAmount: 1,
-            logCount: 1,
-          },
-        },
-      ]),
+      aggregateSalesLogsByUser(match, { limit: 10 }),
     ]);
 
     const t = totals[0] || {
@@ -850,10 +820,16 @@ router.get('/sales-logs/summary', requireAdmin, async (req, res) => {
 
 router.get('/sales-logs', requireAdmin, async (req, res) => {
   const { salesUserId } = req.query;
+  const groupByUser = String(req.query?.groupBy || '').toLowerCase() === 'user';
   const resolved = resolveAdminSalesLogsFilter(req.query);
   if (!resolved) {
     return res.status(400).json({
       error: 'Provide date=YYYY-MM-DD for a single day, or year=YYYY&month=MM (1–12) for a month',
+    });
+  }
+  if (groupByUser && !resolved.isMonthRange) {
+    return res.status(400).json({
+      error: 'groupBy=user requires year=YYYY and month=MM (1–12)',
     });
   }
   if (salesUserId && !mongoose.isValidObjectId(salesUserId)) {
@@ -896,6 +872,19 @@ router.get('/sales-logs', requireAdmin, async (req, res) => {
   };
   if (salesUserId) {
     logUsersFilter._id = salesUserId;
+  }
+
+  if (groupByUser) {
+    try {
+      const monthlyByUser = await aggregateSalesLogsByUser(filter);
+      return res.json({
+        year: resolved.summaryMeta.year,
+        month: resolved.summaryMeta.month,
+        monthlyByUser,
+      });
+    } catch {
+      return res.status(500).json({ error: 'Failed to list monthly sales totals by user' });
+    }
   }
 
   try {

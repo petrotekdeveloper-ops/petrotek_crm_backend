@@ -9,9 +9,9 @@ const server = http.createServer(app);
 
 require('dotenv').config();
 
-// Windows: Node's DNS often fails mongodb+srv SRV lookups (querySrv ECONNREFUSED) while nslookup works.
-// Optional override: MONGODB_DNS_SERVERS=8.8.8.8,1.1.1.1  |  set USE_PUBLIC_DNS_FOR_MONGODB=false to skip.
-if (process.env.USE_PUBLIC_DNS_FOR_MONGODB !== 'false') {
+// Windows: Node's DNS can fail mongodb+srv SRV lookups while nslookup works.
+// Keep this override Windows-only so Linux production environments use platform DNS.
+if (process.platform === 'win32' && process.env.USE_PUBLIC_DNS_FOR_MONGODB !== 'false') {
   const servers = process.env.MONGODB_DNS_SERVERS
     ? process.env.MONGODB_DNS_SERVERS.split(',').map((s) => s.trim()).filter(Boolean)
     : ['8.8.8.8', '1.1.1.1'];
@@ -51,26 +51,32 @@ app.set('io', io);
 initializeChatSocket(io);
 
 async function connectDB() {
-    try {
-      await mongoose.connect(process.env.MONGODB_URI);
-      await User.updateMany(
-        {
-          designation: { $in: ['manager', 'sales'] },
-          $or: [{ company: { $exists: false } }, { company: null }, { company: '' }],
-        },
-        { $set: { company: 'Petrotek' } }
-      );
-      console.log("MongoDB Connected");
-    } catch (err) {
-      console.log("Mongo Error:", err);
-    }
+  if (!process.env.MONGODB_URI) {
+    throw new Error('MONGODB_URI is not set');
   }
-  
-  connectDB();
 
+  await mongoose.connect(process.env.MONGODB_URI);
+  await User.updateMany(
+    {
+      designation: { $in: ['manager', 'sales'] },
+      $or: [{ company: { $exists: false } }, { company: null }, { company: '' }],
+    },
+    { $set: { company: 'Petrotek' } }
+  );
+  console.log('MongoDB Connected');
+}
 
+async function startServer() {
+  const PORT = process.env.PORT || 5000;
+  try {
+    await connectDB();
+    server.listen(PORT, () => {
+      console.log(`Server is running on port http://localhost:${PORT}`);
+    });
+  } catch (err) {
+    console.error('Startup failed:', err);
+    process.exit(1);
+  }
+}
 
-const PORT = process.env.PORT;
-server.listen(PORT, () => {
-    console.log(`Server is running on port http://localhost:${PORT}`);
-});
+startServer();

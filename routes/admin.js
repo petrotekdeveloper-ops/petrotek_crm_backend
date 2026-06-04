@@ -793,7 +793,11 @@ router.get('/sales-logs/summary', requireAdmin, async (req, res) => {
           },
         },
       ]),
-      aggregateSalesLogsByUser(match, { limit: 10 }),
+      aggregateSalesLogsByUser(match, {
+        limit: 10,
+        year: resolved.summaryMeta.year,
+        month: resolved.summaryMeta.month,
+      }),
     ]);
 
     const t = totals[0] || {
@@ -876,7 +880,10 @@ router.get('/sales-logs', requireAdmin, async (req, res) => {
 
   if (groupByUser) {
     try {
-      const monthlyByUser = await aggregateSalesLogsByUser(filter);
+      const monthlyByUser = await aggregateSalesLogsByUser(filter, {
+        year: resolved.summaryMeta.year,
+        month: resolved.summaryMeta.month,
+      });
       return res.json({
         year: resolved.summaryMeta.year,
         month: resolved.summaryMeta.month,

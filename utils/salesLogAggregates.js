@@ -1,4 +1,5 @@
 const DailySale = require('../models/dailySale');
+const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 
 function displayField(v) {
   if (v == null) return '—';
@@ -9,10 +10,10 @@ function displayField(v) {
 /**
  * Sum DailySale rows by salesUserId (month or day match), with user lookup.
  * @param {object} match - Mongo filter including saleDate and salesUserId
- * @param {{ limit?: number|null }} options - limit for top-N (e.g. summary); omit for full list
+ * @param {{ limit?: number|null, year?: number, month?: number }} options - limit for top-N (e.g. summary); omit for full list
  */
 async function aggregateSalesLogsByUser(match, options = {}) {
-  const { limit = null } = options;
+  const { limit = null, year = null, month = null } = options;
   const pipeline = [
     { $match: match },
     {
@@ -51,12 +52,31 @@ async function aggregateSalesLogsByUser(match, options = {}) {
   );
 
   const rows = await DailySale.aggregate(pipeline);
+  const targetByUser = new Map();
+
+  if (year != null && month != null && rows.length > 0) {
+    const ids = rows.map((row) => row.salesUserId).filter(Boolean);
+    const targets = await MonthlySalesUserTarget.find({
+      salesUserId: { $in: ids },
+      year,
+      month,
+    })
+      .select('salesUserId targetAmount')
+      .lean();
+    for (const target of targets) {
+      targetByUser.set(String(target.salesUserId), Number(target.targetAmount || 0));
+    }
+  }
+
   return rows.map((row) => ({
     salesUserId: row.salesUserId,
     salesUserName: displayField(row.salesUserName),
     salesUserPhone: displayField(row.salesUserPhone),
     salesUserDesignation: displayField(row.salesUserDesignation),
     totalAmount: Number(row.totalAmount || 0),
+    targetAmount: targetByUser.has(String(row.salesUserId))
+      ? targetByUser.get(String(row.salesUserId))
+      : null,
     logCount: row.logCount || 0,
   }));
 }

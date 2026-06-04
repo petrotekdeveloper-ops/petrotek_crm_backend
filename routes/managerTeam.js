@@ -435,6 +435,10 @@ router.get('/team-summary', requireManager, async (req, res) => {
       year: ym.year,
       month: ym.month,
       teamTargetAmount,
+      managerDefaultTargetAmount:
+        req.manager.managerDefaultTargetAmount != null
+          ? Number(req.manager.managerDefaultTargetAmount)
+          : null,
       members,
     });
   } catch {

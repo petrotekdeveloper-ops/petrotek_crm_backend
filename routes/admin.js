@@ -325,6 +325,7 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     approvalStatus,
     company,
     serviceHead,
+    managerDefaultTargetAmount,
   } = req.body || {};
   /** Quick approve/reject from admin UI sends only this field — skip role profile rules (manager, vehicle, etc.). */
   const rawBody = req.body || {};
@@ -416,7 +417,9 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     }
   }
 
-  const currentUser = await User.findById(id).select('designation vehicleNumber managerId company');
+  const currentUser = await User.findById(id).select(
+    'designation vehicleNumber managerId company managerDefaultTargetAmount'
+  );
   if (!currentUser) return res.status(404).json({ error: 'User not found' });
 
   if (serviceHead !== undefined) {
@@ -428,6 +431,26 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
       });
     }
     updates.serviceHead = desired;
+  }
+
+  if (managerDefaultTargetAmount !== undefined) {
+    const designationForTarget = updates.designation ?? currentUser.designation;
+    if (designationForTarget !== 'manager') {
+      updates.managerDefaultTargetAmount = null;
+    } else if (
+      managerDefaultTargetAmount === null ||
+      String(managerDefaultTargetAmount).trim() === ''
+    ) {
+      updates.managerDefaultTargetAmount = null;
+    } else {
+      const amt = Number(managerDefaultTargetAmount);
+      if (!Number.isFinite(amt) || amt < 0) {
+        return res.status(400).json({
+          error: 'managerDefaultTargetAmount must be a non-negative number',
+        });
+      }
+      updates.managerDefaultTargetAmount = amt;
+    }
   }
 
   if (!onlyApprovalStatus) {
@@ -466,6 +489,9 @@ router.put('/users/:id', requireAdmin, async (req, res) => {
     if (designationToValidate !== 'service') {
       updates.serviceHead = false;
     }
+    if (designationToValidate !== 'manager') {
+      updates.managerDefaultTargetAmount = null;
+    }
   }
 
   if (Object.keys(updates).length === 0) {
@@ -500,7 +526,7 @@ router.delete('/users/:id', requireAdmin, async (req, res) => {
   }
 });
 
-/** Per sales user only (managerId + salesUserId + year + month + targetAmount). */
+/** Per sales-user monthly target. Manager targets use User.managerDefaultTargetAmount instead. */
 router.put('/sales-user-targets', requireAdmin, async (req, res) => {
   const { managerId, salesUserId, year, month, targetAmount } = req.body || {};
   const y = parseInt(year, 10);
@@ -526,22 +552,27 @@ router.put('/sales-user-targets', requireAdmin, async (req, res) => {
     if (!mgr || mgr.designation !== 'manager') {
       return res.status(400).json({ error: 'managerId must reference a manager' });
     }
-    const rep = await User.findById(salesUserId);
-    if (
-      !rep ||
-      rep.designation !== 'sales' ||
-      String(rep.managerId) !== String(managerId)
-    ) {
+    const targetUser = await User.findById(salesUserId);
+    if (targetUser?.designation === 'manager') {
+      return res.status(400).json({
+        error: 'Manager targets are single defaults; update managerDefaultTargetAmount on the user',
+      });
+    }
+    const isSalesUnderManager =
+      targetUser?.designation === 'sales' &&
+      String(targetUser.managerId) === String(managerId);
+
+    if (!targetUser || !isSalesUnderManager) {
       return res.status(400).json({
         error: 'salesUserId must be a sales user under this manager',
       });
     }
     const doc = await MonthlySalesUserTarget.findOneAndUpdate(
-      { salesUserId: rep._id, year: y, month: m },
+      { salesUserId: targetUser._id, year: y, month: m },
       {
         $set: {
-          managerId,
-          salesUserId: rep._id,
+          managerId: mgr._id,
+          salesUserId: targetUser._id,
           year: y,
           month: m,
           targetAmount: amt,

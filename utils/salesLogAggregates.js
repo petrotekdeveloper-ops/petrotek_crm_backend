@@ -45,6 +45,7 @@ async function aggregateSalesLogsByUser(match, options = {}) {
         salesUserName: '$salesUser.name',
         salesUserPhone: '$salesUser.phone',
         salesUserDesignation: '$salesUser.designation',
+        managerDefaultTargetAmount: '$salesUser.managerDefaultTargetAmount',
         totalAmount: 1,
         logCount: 1,
       },
@@ -74,9 +75,14 @@ async function aggregateSalesLogsByUser(match, options = {}) {
     salesUserPhone: displayField(row.salesUserPhone),
     salesUserDesignation: displayField(row.salesUserDesignation),
     totalAmount: Number(row.totalAmount || 0),
-    targetAmount: targetByUser.has(String(row.salesUserId))
-      ? targetByUser.get(String(row.salesUserId))
-      : null,
+    targetAmount:
+      row.salesUserDesignation === 'manager'
+        ? row.managerDefaultTargetAmount != null
+          ? Number(row.managerDefaultTargetAmount)
+          : null
+        : targetByUser.has(String(row.salesUserId))
+          ? targetByUser.get(String(row.salesUserId))
+          : null,
     logCount: row.logCount || 0,
   }));
 }

@@ -72,6 +72,12 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    /** Admin-set manager target reused for every monthly report. */
+    managerDefaultTargetAmount: {
+      type: Number,
+      min: 0,
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -89,6 +95,9 @@ userSchema.pre('validate', async function applyCompanyRules() {
   }
   if (this.designation !== 'service') {
     this.serviceHead = false;
+  }
+  if (this.designation !== 'manager') {
+    this.managerDefaultTargetAmount = null;
   }
 });
 

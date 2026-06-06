@@ -29,6 +29,11 @@ const tripRoutes = require('./routes/trips');
 const serviceRoutes = require('./routes/service');
 const financeRoutes = require('./routes/finance');
 const chatRoutes = require('./routes/chat');
+const {
+  salesQuotationRoutes,
+  managerQuotationRoutes,
+  serviceQuotationRoutes,
+} = require('./routes/quotations');
 const User = require('./models/users');
 const { initializeChatSocket } = require('./sockets/chatSocket');
 
@@ -36,9 +41,12 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/finance', financeRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/sales', salesRoutes);
+app.use('/api/sales/quotations', salesQuotationRoutes);
 app.use('/api/manager', managerTeamRoutes);
+app.use('/api/manager/quotations', managerQuotationRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/service', serviceRoutes);
+app.use('/api/service/quotations', serviceQuotationRoutes);
 app.use('/api/chat', chatRoutes);
 
 const io = new Server(server, {

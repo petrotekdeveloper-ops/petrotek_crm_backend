@@ -6,12 +6,19 @@ const User = require('../models/users');
 const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const ServiceLog = require('../models/serviceLog');
 const DailySale = require('../models/dailySale');
+const Quotation = require('../models/quotation');
 const {
   parseSaleDate,
   withMissingDailySaleZeros,
   withMissingDailySaleZerosForDates,
 } = require('../utils/salesHelpers');
 const { aggregateSalesLogsByUser } = require('../utils/salesLogAggregates');
+const {
+  eligibleQuotationUserIds,
+  parseListLimit,
+  quotationResponse,
+  resolveQuotationListFilter,
+} = require('../utils/quotationHelpers');
 const { requireAdmin } = require('../middleware/adminAuth');
 
 const router = express.Router();
@@ -33,6 +40,10 @@ function userResponse(doc) {
 
 function badUserId(res) {
   return res.status(400).json({ error: 'Invalid user id' });
+}
+
+function badQuotationId(res) {
+  return res.status(400).json({ error: 'Invalid quotation id' });
 }
 
 /** Trim and treat empty as em dash (admin sales log listing). */
@@ -972,6 +983,66 @@ router.get('/sales-logs', requireAdmin, async (req, res) => {
     });
   } catch {
     return res.status(500).json({ error: 'Failed to list daily sales logs' });
+  }
+});
+
+router.get('/quotations', requireAdmin, async (req, res) => {
+  const { salesUserId } = req.query;
+  const ym = parseYearMonth(req.query);
+  const resolved = resolveQuotationListFilter(req.query);
+  const limit = parseListLimit(req.query, { monthScoped: Boolean(ym) });
+
+  if (salesUserId && !mongoose.isValidObjectId(salesUserId)) {
+    return res.status(400).json({ error: 'Invalid salesUserId' });
+  }
+
+  let allowedIds;
+  try {
+    allowedIds = await eligibleQuotationUserIds(
+      salesUserId && mongoose.isValidObjectId(salesUserId)
+        ? new mongoose.Types.ObjectId(salesUserId)
+        : null
+    );
+  } catch {
+    return res.status(500).json({ error: 'Failed to resolve users' });
+  }
+
+  if (salesUserId && allowedIds.length === 0) {
+    return res.status(404).json({ error: 'User not found or not eligible for quotations' });
+  }
+
+  const filter = {
+    ...resolved.filter,
+    salesUserId: salesUserId ? salesUserId : { $in: allowedIds },
+  };
+
+  try {
+    const rows = await Quotation.find(filter)
+      .sort({ date: -1, createdAt: -1 })
+      .populate('salesUserId', 'name phone designation approvalStatus')
+      .limit(limit)
+      .lean();
+    return res.json({ quotations: rows });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list quotations' });
+  }
+});
+
+router.get('/quotations/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) return badQuotationId(res);
+
+  try {
+    const doc = await Quotation.findById(id).populate(
+      'salesUserId',
+      'name phone designation approvalStatus'
+    );
+    if (!doc) {
+      return res.status(404).json({ error: 'Quotation not found' });
+    }
+    return res.json({ quotation: quotationResponse(doc) });
+  } catch {
+    return res.status(500).json({ error: 'Failed to load quotation' });
   }
 });
 

@@ -1019,7 +1019,7 @@ router.get('/quotations', requireAdmin, async (req, res) => {
   try {
     const rows = await Quotation.find(filter)
       .sort({ date: -1, createdAt: -1 })
-      .populate('salesUserId', 'name phone designation approvalStatus')
+      .populate('salesUserId', 'name phone designation approvalStatus company')
       .limit(limit)
       .lean();
     return res.json({ quotations: rows });
@@ -1035,7 +1035,7 @@ router.get('/quotations/:id', requireAdmin, async (req, res) => {
   try {
     const doc = await Quotation.findById(id).populate(
       'salesUserId',
-      'name phone designation approvalStatus'
+      'name phone designation approvalStatus company'
     );
     if (!doc) {
       return res.status(404).json({ error: 'Quotation not found' });

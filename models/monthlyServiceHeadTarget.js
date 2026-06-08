@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-/** One monthly monetary target per approved service head (any manager may set — last writer wins). */
+/** @deprecated Legacy per-month targets — use `serviceHeadTarget` (one default per service head). */
 const monthlyServiceHeadTargetSchema = new mongoose.Schema(
   {
     serviceHeadUserId: {

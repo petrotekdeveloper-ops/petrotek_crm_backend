@@ -1,7 +1,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const ServiceLog = require('../models/serviceLog');
-const MonthlyServiceHeadTarget = require('../models/monthlyServiceHeadTarget');
+const { resolveServiceHeadTarget } = require('../utils/serviceHeadTargetResolve');
 const { requireService } = require('../middleware/serviceAuth');
 
 const router = express.Router();
@@ -130,13 +130,7 @@ router.get('/', requireService, async (req, res) => {
       ]);
       const achievedAmount =
         achievedRows.length > 0 ? Number(achievedRows[0].total) || 0 : 0;
-      const targetDoc = await MonthlyServiceHeadTarget.findOne({
-        serviceHeadUserId: req.serviceUser._id,
-        year: ym.year,
-        month: ym.month,
-      }).lean();
-      const targetAmount = targetDoc ? Number(targetDoc.targetAmount) : null;
-      const hasTarget = Boolean(targetDoc);
+      const { targetAmount, hasTarget } = await resolveServiceHeadTarget(req.serviceUser._id);
       const remaining =
         targetAmount != null ? Math.max(0, targetAmount - achievedAmount) : null;
 

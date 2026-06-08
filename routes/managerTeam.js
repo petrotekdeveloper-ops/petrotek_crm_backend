@@ -4,7 +4,11 @@ const User = require('../models/users');
 const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const DailySale = require('../models/dailySale');
 const ServiceLog = require('../models/serviceLog');
-const MonthlyServiceHeadTarget = require('../models/monthlyServiceHeadTarget');
+const ServiceHeadTarget = require('../models/serviceHeadTarget');
+const {
+  resolveServiceHeadTargets,
+  clearLegacyMonthlyTargets,
+} = require('../utils/serviceHeadTargetResolve');
 const { requireManager } = require('../middleware/managerAuth');
 const {
   sumDailySalesForUserInMonth,
@@ -591,7 +595,7 @@ router.get('/service-head-amount-logs', requireManager, async (req, res) => {
       });
     }
 
-    const [logs, achievedMap, targetDocs] = await Promise.all([
+    const [logs, achievedMap, targetByHead] = await Promise.all([
       ServiceLog.find({
         serviceUserId: { $in: headIdsForQuery },
         date: { $gte: start, $lt: end },
@@ -605,22 +609,15 @@ router.get('/service-head-amount-logs', requireManager, async (req, res) => {
         ym.year,
         ym.month
       ),
-      MonthlyServiceHeadTarget.find({
-        serviceHeadUserId: { $in: allHeads.map((h) => h._id) },
-        year: ym.year,
-        month: ym.month,
-      }).lean(),
+      resolveServiceHeadTargets(allHeads.map((h) => h._id)),
     ]);
 
-    const targetByHead = new Map(
-      targetDocs.map((d) => [String(d.serviceHeadUserId), d])
-    );
     const serviceHeadSummaries = allHeads.map((h) => {
       const id = String(h._id);
       const achievedAmount = achievedMap.get(id) ?? 0;
       const td = targetByHead.get(id);
-      const targetAmount = td ? td.targetAmount : null;
-      const hasTarget = Boolean(td);
+      const targetAmount = td?.hasTarget ? td.targetAmount : null;
+      const hasTarget = Boolean(td?.hasTarget);
       const remaining =
         targetAmount != null ? Math.max(0, targetAmount - achievedAmount) : null;
       const progressPct =
@@ -678,15 +675,9 @@ router.get('/service-head-amount-logs', requireManager, async (req, res) => {
   }
 });
 
-/** Any approved manager may set a monthly amount target for any approved service head. */
+/** Any approved manager may set the default amount target for any approved service head. */
 router.put('/service-head-target', requireManager, async (req, res) => {
-  const ym = parseYearMonthBody(req.body);
   const { serviceHeadUserId, targetAmount } = req.body || {};
-  if (!ym) {
-    return res.status(400).json({
-      error: 'year and month (1-12) are required',
-    });
-  }
   if (!serviceHeadUserId || !mongoose.isValidObjectId(serviceHeadUserId)) {
     return res.status(400).json({ error: 'Valid serviceHeadUserId is required' });
   }
@@ -708,24 +699,21 @@ router.put('/service-head-target', requireManager, async (req, res) => {
       return res.status(404).json({ error: 'Service head user not found' });
     }
 
-    const doc = await MonthlyServiceHeadTarget.findOneAndUpdate(
-      { serviceHeadUserId: head._id, year: ym.year, month: ym.month },
+    const doc = await ServiceHeadTarget.findOneAndUpdate(
+      { serviceHeadUserId: head._id },
       {
         $set: {
           serviceHeadUserId: head._id,
-          year: ym.year,
-          month: ym.month,
           targetAmount: amt,
           setByManagerId: req.manager._id,
         },
       },
       { upsert: true, returnDocument: 'after', runValidators: true }
     );
+    await clearLegacyMonthlyTargets(head._id);
     return res.json({
       serviceHeadTarget: {
         serviceHeadUserId: head._id,
-        year: ym.year,
-        month: ym.month,
         targetAmount: doc.targetAmount,
       },
     });
@@ -738,13 +726,7 @@ router.put('/service-head-target', requireManager, async (req, res) => {
 });
 
 router.delete('/service-head-target', requireManager, async (req, res) => {
-  const ym = parseYearMonthQuery(req.query);
   const { serviceHeadUserId } = req.query || {};
-  if (!ym) {
-    return res.status(400).json({
-      error: 'Query params year and month (1-12) are required',
-    });
-  }
   if (!serviceHeadUserId || !mongoose.isValidObjectId(serviceHeadUserId)) {
     return res.status(400).json({ error: 'Valid serviceHeadUserId is required' });
   }
@@ -758,11 +740,10 @@ router.delete('/service-head-target', requireManager, async (req, res) => {
     if (!head) {
       return res.status(404).json({ error: 'Service head user not found' });
     }
-    await MonthlyServiceHeadTarget.deleteOne({
-      serviceHeadUserId: head._id,
-      year: ym.year,
-      month: ym.month,
-    });
+    await Promise.all([
+      ServiceHeadTarget.deleteOne({ serviceHeadUserId: head._id }),
+      clearLegacyMonthlyTargets(head._id),
+    ]);
     return res.json({ message: 'Service head target cleared' });
   } catch {
     return res.status(500).json({ error: 'Failed to clear service head target' });

@@ -45,8 +45,8 @@ app.use('/api/sales/quotations', salesQuotationRoutes);
 app.use('/api/manager', managerTeamRoutes);
 app.use('/api/manager/quotations', managerQuotationRoutes);
 app.use('/api/trips', tripRoutes);
-app.use('/api/service', serviceRoutes);
 app.use('/api/service/quotations', serviceQuotationRoutes);
+app.use('/api/service', serviceRoutes);
 app.use('/api/chat', chatRoutes);
 
 const io = new Server(server, {

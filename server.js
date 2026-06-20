@@ -29,6 +29,7 @@ const tripRoutes = require('./routes/trips');
 const serviceRoutes = require('./routes/service');
 const financeRoutes = require('./routes/finance');
 const chatRoutes = require('./routes/chat');
+const reportRoutes = require('./routes/report');
 const {
   salesQuotationRoutes,
   managerQuotationRoutes,
@@ -48,6 +49,7 @@ app.use('/api/trips', tripRoutes);
 app.use('/api/service/quotations', serviceQuotationRoutes);
 app.use('/api/service', serviceRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/reports', reportRoutes);
 
 const io = new Server(server, {
   cors: {

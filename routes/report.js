@@ -34,11 +34,16 @@ function buildCreatePayload(body) {
     payload: {
       date: saleDate,
       type: body.type,
-      attendacne: body.attendacne,
-      activity: body.activity,
-      generatedBusiness: body.generatedBusiness,
-      customerVisit: body.customerVisit,
-      notes: body.notes,
+      companyName: body.companyName,
+      salesExecutiveName: body.salesExecutiveName,
+      dailyTargetAchievement: body.dailyTargetAchievement,
+      customerActivities: body.customerActivities,
+      activityCountSummary: body.activityCountSummary,
+      businessGenerated: body.businessGenerated,
+      indoorSupportActivities: body.indoorSupportActivities,
+      topAchievementsToday: body.topAchievementsToday,
+      tomorrowsPlan: body.tomorrowsPlan,
+      managementCheck: body.managementCheck,
     },
   };
 }
@@ -58,13 +63,22 @@ function buildUpdatePayload(body) {
     }
     update.type = body.type;
   }
-  if (body?.attendacne !== undefined) update.attendacne = body.attendacne;
-  if (body?.activity !== undefined) update.activity = body.activity;
-  if (body?.generatedBusiness !== undefined) {
-    update.generatedBusiness = body.generatedBusiness;
+  if (body?.companyName !== undefined) update.companyName = body.companyName;
+  if (body?.salesExecutiveName !== undefined) update.salesExecutiveName = body.salesExecutiveName;
+  if (body?.dailyTargetAchievement !== undefined) {
+    update.dailyTargetAchievement = body.dailyTargetAchievement;
   }
-  if (body?.customerVisit !== undefined) update.customerVisit = body.customerVisit;
-  if (body?.notes !== undefined) update.notes = body.notes;
+  if (body?.customerActivities !== undefined) update.customerActivities = body.customerActivities;
+  if (body?.activityCountSummary !== undefined) {
+    update.activityCountSummary = body.activityCountSummary;
+  }
+  if (body?.businessGenerated !== undefined) update.businessGenerated = body.businessGenerated;
+  if (body?.indoorSupportActivities !== undefined) {
+    update.indoorSupportActivities = body.indoorSupportActivities;
+  }
+  if (body?.topAchievementsToday !== undefined) update.topAchievementsToday = body.topAchievementsToday;
+  if (body?.tomorrowsPlan !== undefined) update.tomorrowsPlan = body.tomorrowsPlan;
+  if (body?.managementCheck !== undefined) update.managementCheck = body.managementCheck;
   if (Object.keys(update).length === 0) {
     return { error: 'At least one updatable field is required', update: null };
   }
@@ -79,10 +93,14 @@ function mapValidationError(err) {
 
 function buildManagerVerificationUpdate(body) {
   const fields = [
-    'outdoorVisitVerified',
-    'attendanceVerified',
-    'reportSubmitted',
+    'customerNamesRecorded',
+    'outcomesMentioned',
+    'quoteValuesRecorded',
+    'orderValuesRecorded',
+    'newCustomersClearlyMarked',
+    'businessGeneratedVisible',
     'crmUpdated',
+    'verifiedByManager',
   ];
   const update = {};
 
@@ -91,13 +109,20 @@ function buildManagerVerificationUpdate(body) {
     if (typeof body[field] !== 'boolean') {
       return { error: `${field} must be boolean`, update: null };
     }
-    update[`managementReview.${field}`] = body[field];
+    update[`managementCheck.${field}`] = body[field];
+  }
+
+  if (body?.managerRemarks !== undefined) {
+    update['managementCheck.managerRemarks'] = body.managerRemarks;
+  }
+  if (body?.managerInitials !== undefined) {
+    update['managementCheck.managerInitials'] = body.managerInitials;
   }
 
   if (Object.keys(update).length === 0) {
     return {
       error:
-        'At least one verification field is required: outdoorVisitVerified, attendanceVerified, reportSubmitted, crmUpdated',
+        'At least one management check field is required',
       update: null,
     };
   }
@@ -273,8 +298,8 @@ router.put('/manager/team/:id/verification', requireManager, async (req, res) =>
     for (const [path, value] of Object.entries(update)) {
       report.set(path, value);
     }
-    report.set('managementReview.verifiedBy', req.manager._id);
-    report.set('managementReview.verifiedAt', new Date());
+    report.set('managementCheck.verifiedBy', req.manager._id);
+    report.set('managementCheck.verifiedAt', new Date());
     await report.save();
 
     return res.json({ report });

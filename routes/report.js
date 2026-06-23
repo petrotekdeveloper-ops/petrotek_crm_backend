@@ -21,6 +21,21 @@ function parseUtcMidnightDate(input) {
   );
 }
 
+function parseYearMonth(query) {
+  const y = parseInt(query?.year, 10);
+  const m = parseInt(query?.month, 10);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) {
+    return null;
+  }
+  return { year: y, month: m };
+}
+
+function monthUtcRange(year, month) {
+  const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month, 1, 0, 0, 0, 0));
+  return { start, end };
+}
+
 function buildCreatePayload(body) {
   const saleDate = parseUtcMidnightDate(body?.date);
   if (!saleDate) {
@@ -333,7 +348,11 @@ router.get('/admin/reports', requireAdmin, async (req, res) => {
     if (req.query?.type) {
       filter.type = req.query.type;
     }
-    if (req.query?.date) {
+    const ym = parseYearMonth(req.query);
+    if (ym) {
+      const { start, end } = monthUtcRange(ym.year, ym.month);
+      filter.date = { $gte: start, $lt: end };
+    } else if (req.query?.date) {
       const date = parseUtcMidnightDate(req.query.date);
       if (!date) return res.status(400).json({ error: 'Invalid date query' });
       filter.date = date;
@@ -358,7 +377,7 @@ router.get('/admin/reports', requireAdmin, async (req, res) => {
       .sort({ date: -1, _id: -1 })
       .limit(limit)
       .populate('user', 'name phone managerId company')
-      .populate('managementReview.verifiedBy', 'name phone')
+      .populate('managementCheck.verifiedBy', 'name phone')
       .lean();
 
     return res.json({
@@ -367,6 +386,9 @@ router.get('/admin/reports', requireAdmin, async (req, res) => {
         managerScoped: Boolean(req.query?.managerId),
         managerId: req.query?.managerId || null,
         managerTeamUsersCount: Array.isArray(allowedUserIds) ? allowedUserIds.length : null,
+        year: ym?.year ?? null,
+        month: ym?.month ?? null,
+        date: ym ? null : filter.date ?? null,
       },
     });
   } catch {
@@ -382,7 +404,7 @@ router.get('/admin/reports/:id', requireAdmin, async (req, res) => {
   try {
     const report = await DailyReports.findById(id)
       .populate('user', 'name phone managerId company')
-      .populate('managementReview.verifiedBy', 'name phone')
+      .populate('managementCheck.verifiedBy', 'name phone')
       .lean();
     if (!report) {
       return res.status(404).json({ error: 'Report not found' });

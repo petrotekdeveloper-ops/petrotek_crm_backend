@@ -36,6 +36,50 @@ function monthUtcRange(year, month) {
   return { start, end };
 }
 
+const DAILY_REPORT_KPI_KEYS = [
+  'newCustomers',
+  'existingFollowUps',
+  'customerVisits',
+  'callsMade',
+  'quotationsSent',
+  'ordersReceived',
+  'collectionFollowUps',
+];
+
+function sanitizeSalesDailyTargetRow(row) {
+  return {
+    achievedToday: row?.achievedToday ?? '',
+    remarks: row?.remarks ?? '',
+  };
+}
+
+function sanitizeSalesDailyTargetAchievement(dta) {
+  const out = {};
+  for (const key of DAILY_REPORT_KPI_KEYS) {
+    out[key] = sanitizeSalesDailyTargetRow(dta?.[key]);
+  }
+  return out;
+}
+
+function resolveSupportActivities(body) {
+  if (body?.supportActivities !== undefined) return body.supportActivities;
+  if (body?.indoorSupportActivities !== undefined) return body.indoorSupportActivities;
+  return undefined;
+}
+
+function mergeSalesDailyTargetAchievement(existing, incoming) {
+  const sanitized = sanitizeSalesDailyTargetAchievement(incoming);
+  const out = {};
+  for (const key of DAILY_REPORT_KPI_KEYS) {
+    const prev = existing?.[key] || {};
+    out[key] = {
+      ...sanitized[key],
+      managerComments: prev.managerComments ?? '',
+    };
+  }
+  return out;
+}
+
 function buildCreatePayload(body) {
   const saleDate = parseUtcMidnightDate(body?.date);
   if (!saleDate) {
@@ -51,11 +95,11 @@ function buildCreatePayload(body) {
       type: body.type,
       companyName: body.companyName,
       salesExecutiveName: body.salesExecutiveName,
-      dailyTargetAchievement: body.dailyTargetAchievement,
+      dailyTargetAchievement: sanitizeSalesDailyTargetAchievement(body.dailyTargetAchievement),
       customerActivities: body.customerActivities,
       activityCountSummary: body.activityCountSummary,
       businessGenerated: body.businessGenerated,
-      indoorSupportActivities: body.indoorSupportActivities,
+      indoorSupportActivities: resolveSupportActivities(body),
       topAchievementsToday: body.topAchievementsToday,
       tomorrowsPlan: body.tomorrowsPlan,
       managementCheck: body.managementCheck,
@@ -88,8 +132,9 @@ function buildUpdatePayload(body) {
     update.activityCountSummary = body.activityCountSummary;
   }
   if (body?.businessGenerated !== undefined) update.businessGenerated = body.businessGenerated;
-  if (body?.indoorSupportActivities !== undefined) {
-    update.indoorSupportActivities = body.indoorSupportActivities;
+  const supportActivities = resolveSupportActivities(body);
+  if (supportActivities !== undefined) {
+    update.indoorSupportActivities = supportActivities;
   }
   if (body?.topAchievementsToday !== undefined) update.topAchievementsToday = body.topAchievementsToday;
   if (body?.tomorrowsPlan !== undefined) update.tomorrowsPlan = body.tomorrowsPlan;
@@ -117,6 +162,7 @@ function buildManagerVerificationUpdate(body) {
     'crmUpdated',
     'verifiedByManager',
   ];
+  const kpiKeys = DAILY_REPORT_KPI_KEYS;
   const update = {};
 
   for (const field of fields) {
@@ -132,6 +178,16 @@ function buildManagerVerificationUpdate(body) {
   }
   if (body?.managerInitials !== undefined) {
     update['managementCheck.managerInitials'] = body.managerInitials;
+  }
+
+  const dta = body?.dailyTargetAchievement;
+  if (dta && typeof dta === 'object') {
+    for (const key of kpiKeys) {
+      const row = dta[key];
+      if (row?.managerComments !== undefined) {
+        update[`dailyTargetAchievement.${key}.managerComments`] = String(row.managerComments ?? '');
+      }
+    }
   }
 
   if (Object.keys(update).length === 0) {
@@ -246,7 +302,11 @@ router.get('/manager/team', requireManager, async (req, res) => {
     if (req.query?.type) {
       filter.type = req.query.type;
     }
-    if (req.query?.date) {
+    const ym = parseYearMonth(req.query);
+    if (ym) {
+      const { start, end } = monthUtcRange(ym.year, ym.month);
+      filter.date = { $gte: start, $lt: end };
+    } else if (req.query?.date) {
       const date = parseUtcMidnightDate(req.query.date);
       if (!date) return res.status(400).json({ error: 'Invalid date query' });
       filter.date = date;
@@ -317,7 +377,11 @@ router.put('/manager/team/:id/verification', requireManager, async (req, res) =>
     report.set('managementCheck.verifiedAt', new Date());
     await report.save();
 
-    return res.json({ report });
+    const saved = await DailyReports.findById(id)
+      .populate('user', 'name phone company')
+      .lean();
+
+    return res.json({ report: saved ?? report });
   } catch (err) {
     const validationError = mapValidationError(err);
     if (validationError) {
@@ -446,15 +510,24 @@ router.put('/:id', requireSales, async (req, res) => {
   }
 
   try {
-    const report = await DailyReports.findOneAndUpdate(
-      { _id: id, user: req.salesUser._id },
-      { $set: update },
-      { new: true, runValidators: true }
-    );
-    if (!report) {
+    const existing = await DailyReports.findOne({
+      _id: id,
+      user: req.salesUser._id,
+    });
+    if (!existing) {
       return res.status(404).json({ error: 'Report not found' });
     }
-    return res.json({ report });
+
+    if (update.dailyTargetAchievement !== undefined) {
+      update.dailyTargetAchievement = mergeSalesDailyTargetAchievement(
+        existing.dailyTargetAchievement,
+        update.dailyTargetAchievement
+      );
+    }
+
+    existing.set(update);
+    await existing.save();
+    return res.json({ report: existing });
   } catch (err) {
     const validationError = mapValidationError(err);
     if (validationError) {

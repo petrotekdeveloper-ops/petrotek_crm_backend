@@ -2,11 +2,9 @@ const mongoose = require('mongoose');
 
 const kpiTargetSchema = new mongoose.Schema(
   {
-    dailyTarget: { type: String, default: '' },
     achievedToday: { type: String, default: '' },
-    achievedTillDate: { type: String, default: '' },
-    balance: { type: String, default: '' },
-    percentage: { type: String, default: '' },
+    remarks: { type: String, default: '' },
+    managerComments: { type: String, default: '' },
   },
   { _id: false }
 );
@@ -23,7 +21,7 @@ const customerActivityRowSchema = new mongoose.Schema(
   { _id: false }
 );
 
-const indoorSupportRowSchema = new mongoose.Schema(
+const supportActivityRowSchema = new mongoose.Schema(
   {
     taskCompleted: { type: String, default: '' },
     customerOrDepartment: { type: String, default: '' },
@@ -86,8 +84,9 @@ const dailyReportsSchema = new mongoose.Schema(
       pipelineValue: { type: String, default: '' },
     },
     indoorSupportActivities: {
-      type: [indoorSupportRowSchema],
+      type: [supportActivityRowSchema],
       default: [],
+      alias: 'supportActivities',
     },
     topAchievementsToday: {
       type: [String],
@@ -119,7 +118,11 @@ const dailyReportsSchema = new mongoose.Schema(
       },
     },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { aliases: true },
+    toObject: { aliases: true },
+  }
 );
 
 module.exports = mongoose.model('DailyReports', dailyReportsSchema);

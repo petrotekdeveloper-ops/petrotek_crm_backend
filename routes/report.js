@@ -347,6 +347,148 @@ router.get('/manager/team/:id', requireManager, async (req, res) => {
   }
 });
 
+function buildOwnReportsListFilter(req, userId, query) {
+  const filter = { user: userId };
+
+  if (query?.type) {
+    if (!['indoor', 'outdoor'].includes(query.type)) {
+      return { error: "type must be one of: 'indoor', 'outdoor'", filter: null };
+    }
+    filter.type = query.type;
+  }
+
+  if (query?.date) {
+    const saleDate = parseUtcMidnightDate(query.date);
+    if (!saleDate) {
+      return { error: 'Invalid date query', filter: null };
+    }
+    filter.date = saleDate;
+  }
+
+  return { error: null, filter };
+}
+
+router.get('/manager/mine', requireManager, async (req, res) => {
+  const { error, filter } = buildOwnReportsListFilter(req, req.manager._id, req.query);
+  if (error) {
+    return res.status(400).json({ error });
+  }
+
+  const limitRaw = Number(req.query?.limit);
+  const limit = Number.isFinite(limitRaw)
+    ? Math.max(1, Math.min(200, Math.trunc(limitRaw)))
+    : 100;
+
+  try {
+    const reports = await DailyReports.find(filter)
+      .sort({ date: -1, _id: -1 })
+      .limit(limit)
+      .lean();
+    return res.json({ reports });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list daily reports' });
+  }
+});
+
+router.post('/manager/mine', requireManager, async (req, res) => {
+  const { error, payload } = buildCreatePayload(req.body || {});
+  if (error) {
+    return res.status(400).json({ error });
+  }
+  try {
+    const doc = await DailyReports.create({
+      ...payload,
+      user: req.manager._id,
+      companyName: payload.companyName || req.manager.company || '',
+      salesExecutiveName: payload.salesExecutiveName || req.manager.name || '',
+    });
+    return res.status(201).json({ report: doc });
+  } catch (err) {
+    const validationError = mapValidationError(err);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+    return res.status(500).json({ error: 'Failed to create daily report' });
+  }
+});
+
+router.get('/manager/mine/:id', requireManager, async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+  try {
+    const report = await DailyReports.findOne({
+      _id: id,
+      user: req.manager._id,
+    }).lean();
+    if (!report) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+    return res.json({ report });
+  } catch {
+    return res.status(500).json({ error: 'Failed to load daily report' });
+  }
+});
+
+router.put('/manager/mine/:id', requireManager, async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+
+  const { error, update } = buildUpdatePayload(req.body || {});
+  if (error) {
+    return res.status(400).json({ error });
+  }
+
+  try {
+    const existing = await DailyReports.findOne({
+      _id: id,
+      user: req.manager._id,
+    });
+    if (!existing) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+
+    if (update.dailyTargetAchievement !== undefined) {
+      update.dailyTargetAchievement = mergeSalesDailyTargetAchievement(
+        existing.dailyTargetAchievement,
+        update.dailyTargetAchievement
+      );
+    }
+
+    existing.set(update);
+    await existing.save();
+    return res.json({ report: existing });
+  } catch (err) {
+    const validationError = mapValidationError(err);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+    return res.status(500).json({ error: 'Failed to update daily report' });
+  }
+});
+
+router.delete('/manager/mine/:id', requireManager, async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ error: 'Invalid id' });
+  }
+  try {
+    const report = await DailyReports.findOneAndDelete({
+      _id: id,
+      user: req.manager._id,
+    });
+    if (!report) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
+    return res.json({ message: 'Deleted' });
+  } catch {
+    return res.status(500).json({ error: 'Failed to delete daily report' });
+  }
+});
+
 router.put('/manager/team/:id/verification', requireManager, async (req, res) => {
   const { id } = req.params;
   if (!mongoose.isValidObjectId(id)) {
@@ -434,13 +576,14 @@ router.get('/admin/reports', requireAdmin, async (req, res) => {
         .select('_id')
         .lean();
       allowedUserIds = teamUsers.map((u) => u._id);
+      allowedUserIds.push(req.query.managerId);
       filter.user = { $in: allowedUserIds };
     }
 
     const reports = await DailyReports.find(filter)
       .sort({ date: -1, _id: -1 })
       .limit(limit)
-      .populate('user', 'name phone managerId company')
+      .populate('user', 'name phone managerId company designation')
       .populate('managementCheck.verifiedBy', 'name phone')
       .lean();
 
@@ -467,7 +610,7 @@ router.get('/admin/reports/:id', requireAdmin, async (req, res) => {
   }
   try {
     const report = await DailyReports.findById(id)
-      .populate('user', 'name phone managerId company')
+      .populate('user', 'name phone managerId company designation')
       .populate('managementCheck.verifiedBy', 'name phone')
       .lean();
     if (!report) {

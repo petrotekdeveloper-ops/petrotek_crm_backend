@@ -11,6 +11,7 @@ const {
   parseSaleDate,
   withMissingDailySaleZeros,
   withMissingDailySaleZerosForDates,
+  sumDailySalesForUserInMonth,
 } = require('../utils/salesHelpers');
 const { aggregateSalesLogsByUser } = require('../utils/salesLogAggregates');
 const {
@@ -156,6 +157,106 @@ router.get('/users', requireAdmin, async (req, res) => {
     return res.json({ users: users.map((u) => userResponse(u)) });
   } catch {
     return res.status(500).json({ error: 'Failed to list users' });
+  }
+});
+
+router.get('/users/:id/daily-sales', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) return badUserId(res);
+  const ym = parseYearMonth(req.query);
+  if (!ym) {
+    return res.status(400).json({
+      error: 'Query params year and month (1-12) are required',
+    });
+  }
+
+  try {
+    const user = await User.findById(id)
+      .select(
+        'name phone email company designation dob managerId managerDefaultTargetAmount approvalStatus'
+      )
+      .lean();
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    if (!ADMIN_SALES_LOG_DESIGNATIONS.includes(user.designation)) {
+      return res.status(400).json({
+        error: 'This user does not submit daily sales logs',
+      });
+    }
+
+    const { start, end } = monthUtcRange(ym.year, ym.month);
+    const [rows, monthTotal, salesTargetDoc, managerRef] = await Promise.all([
+      DailySale.find({
+        salesUserId: user._id,
+        saleDate: { $gte: start, $lt: end },
+      })
+        .sort({ saleDate: -1, createdAt: -1 })
+        .lean(),
+      sumDailySalesForUserInMonth(user._id, ym.year, ym.month),
+      user.designation === 'sales'
+        ? MonthlySalesUserTarget.findOne({
+            salesUserId: user._id,
+            year: ym.year,
+            month: ym.month,
+          })
+            .select('_id targetAmount')
+            .lean()
+        : null,
+      user.managerId
+        ? User.findById(user.managerId).select('name phone').lean()
+        : null,
+    ]);
+
+    let monthlyTargetAmount = null;
+    let hasTarget = false;
+    if (user.designation === 'manager') {
+      if (user.managerDefaultTargetAmount != null) {
+        monthlyTargetAmount = Number(user.managerDefaultTargetAmount);
+        hasTarget = Number.isFinite(monthlyTargetAmount);
+      }
+    } else if (salesTargetDoc) {
+      monthlyTargetAmount = salesTargetDoc.targetAmount;
+      hasTarget = true;
+    }
+
+    const remaining =
+      monthlyTargetAmount != null
+        ? Math.max(0, monthlyTargetAmount - monthTotal)
+        : null;
+
+    const dailySales = withMissingDailySaleZeros(
+      rows,
+      [user],
+      ym.year,
+      ym.month,
+      makeAdminZeroSaleRow
+    );
+
+    return res.json({
+      user: {
+        userId: user._id,
+        name: user.name,
+        phone: user.phone,
+        email: user.email || '',
+        company: user.company || '',
+        designation: user.designation,
+        dob: user.dob,
+        approvalStatus: user.approvalStatus,
+        managerId: user.managerId,
+        managerName: managerRef?.name ?? null,
+        managerPhone: managerRef?.phone ?? null,
+      },
+      year: ym.year,
+      month: ym.month,
+      monthTotal,
+      monthlyTargetAmount,
+      hasTarget,
+      remaining,
+      dailySales,
+    });
+  } catch {
+    return res.status(500).json({ error: 'Failed to load user daily sales detail' });
   }
 });
 

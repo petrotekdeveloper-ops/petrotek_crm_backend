@@ -35,6 +35,7 @@ const {
   managerQuotationRoutes,
   serviceQuotationRoutes,
 } = require('./routes/quotations');
+const { salesEnquiryRoutes, managerEnquiryRoutes } = require('./routes/enquiries');
 const User = require('./models/users');
 const { initializeChatSocket } = require('./sockets/chatSocket');
 
@@ -43,8 +44,10 @@ app.use('/api/finance', financeRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/sales', salesRoutes);
 app.use('/api/sales/quotations', salesQuotationRoutes);
+app.use('/api/sales/enquiries', salesEnquiryRoutes);
 app.use('/api/manager', managerTeamRoutes);
 app.use('/api/manager/quotations', managerQuotationRoutes);
+app.use('/api/manager/enquiries', managerEnquiryRoutes);
 app.use('/api/trips', tripRoutes);
 app.use('/api/service/quotations', serviceQuotationRoutes);
 app.use('/api/service', serviceRoutes);

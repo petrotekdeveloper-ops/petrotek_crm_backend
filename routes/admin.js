@@ -7,6 +7,7 @@ const MonthlySalesUserTarget = require('../models/monthlySalesUserTarget');
 const ServiceLog = require('../models/serviceLog');
 const DailySale = require('../models/dailySale');
 const Quotation = require('../models/quotation');
+const Enquiry = require('../models/enquiry');
 const {
   parseSaleDate,
   withMissingDailySaleZeros,
@@ -20,6 +21,11 @@ const {
   quotationResponse,
   resolveQuotationListFilter,
 } = require('../utils/quotationHelpers');
+const {
+  buildEnquiryQueryFilters,
+  enquiryResponse,
+  filterDueTodayRows,
+} = require('../utils/enquiryHelpers');
 const { requireAdmin } = require('../middleware/adminAuth');
 
 const router = express.Router();
@@ -45,6 +51,10 @@ function badUserId(res) {
 
 function badQuotationId(res) {
   return res.status(400).json({ error: 'Invalid quotation id' });
+}
+
+function badEnquiryId(res) {
+  return res.status(400).json({ error: 'Invalid enquiry id' });
 }
 
 /** Trim and treat empty as em dash (admin sales log listing). */
@@ -1144,6 +1154,58 @@ router.get('/quotations/:id', requireAdmin, async (req, res) => {
     return res.json({ quotation: quotationResponse(doc) });
   } catch {
     return res.status(500).json({ error: 'Failed to load quotation' });
+  }
+});
+
+router.get('/enquiries', requireAdmin, async (req, res) => {
+  const { createdById } = req.query;
+  const { filter } = buildEnquiryQueryFilters(req.query);
+  const ym = req.query?.year && req.query?.month;
+  const limit = parseListLimit(req.query, { monthScoped: Boolean(ym) });
+
+  if (createdById && !mongoose.isValidObjectId(createdById)) {
+    return res.status(400).json({ error: 'Invalid createdById' });
+  }
+
+  const enquiryFilter = {
+    ...filter,
+    ...(createdById ? { createdBy: createdById } : {}),
+  };
+
+  try {
+    let rows = await Enquiry.find(enquiryFilter)
+      .sort({ dateReceived: -1, createdAt: -1 })
+      .populate('createdBy', 'name phone designation approvalStatus company')
+      .limit(limit)
+      .lean();
+
+    if (req.query?.dueToday === 'true') {
+      rows = filterDueTodayRows(rows);
+    }
+
+    return res.json({
+      enquiries: rows.map((row) => enquiryResponse(row)),
+    });
+  } catch {
+    return res.status(500).json({ error: 'Failed to list enquiries' });
+  }
+});
+
+router.get('/enquiries/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  if (!mongoose.isValidObjectId(id)) return badEnquiryId(res);
+
+  try {
+    const doc = await Enquiry.findById(id).populate(
+      'createdBy',
+      'name phone designation approvalStatus company'
+    );
+    if (!doc) {
+      return res.status(404).json({ error: 'Enquiry not found' });
+    }
+    return res.json({ enquiry: enquiryResponse(doc) });
+  } catch {
+    return res.status(500).json({ error: 'Failed to load enquiry' });
   }
 });
 
